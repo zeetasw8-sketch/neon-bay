@@ -78,7 +78,12 @@ const NBWorld = {
       sw.rotation.x = -Math.PI / 2; sw.position.set(cx, 0.03, cz); sw.receiveShadow = true; scene.add(sw);
     }
 
-    // Buildings: window textures from canvas, varied heights + neon roofs
+    // Buildings: window textures from canvas, varied heights + neon roofs.
+    // Visual variety pass: a tower is no longer one flat box — tall ones get
+    // a set-back rooftop box, half get a lit ground-floor shopfront band,
+    // and the tallest get a thin antenna, so the skyline reads as a city
+    // instead of a row of slabs. All of it is visual only: the collision
+    // footprint stays the base box, so movement and missions are unchanged.
     const winTex = this._windowTextures(rng);
     const palette = [0x5a6b8a, 0x8a5a6b, 0x4a7a6a, 0x7a6a4a, 0x6a5a9a, 0x3a4a6a, 0x9a7a5a];
     const neonCols = [0xff2ea6, 0x00e5ff, 0xffd94d, 0x7dff5e];
@@ -93,8 +98,9 @@ const NBWorld = {
         const ox = (k === 0 ? -1 : 1) * (n === 2 ? 11 : 0) + (rng() - 0.5) * 6;
         const oz = (rng() - 0.5) * 8;
         const x = cx + ox, z = cz + oz;
+        const baseCol = palette[Math.floor(rng() * palette.length)];
         const mat = new THREE.MeshLambertMaterial({
-          color: palette[Math.floor(rng() * palette.length)],
+          color: baseCol,
           map: winTex[Math.floor(rng() * winTex.length)],
         });
         const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
@@ -102,6 +108,31 @@ const NBWorld = {
         scene.add(b);
         this.buildings.push(b);
         this.colliders.push({ x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2 });
+        // Deterministic per-building variety (from grid position, not the
+        // seeded stream, so the rest of the city layout does not shift).
+        const v = ((bx * 31 + bz * 17 + k * 13) % 10) / 10;
+        // Lit shopfront band around the ground floor.
+        if (v < 0.5) {
+          const shop = new THREE.Mesh(
+            new THREE.BoxGeometry(w + 0.2, 2.8, d + 0.2),
+            new THREE.MeshLambertMaterial({ color: neonCols[Math.floor(v * 8) % neonCols.length] }));
+          shop.position.set(x, 1.4, z); scene.add(shop);
+        }
+        // Set-back rooftop box on tall towers, breaking the flat silhouette.
+        if (h > 32 && v < 0.7) {
+          const rh2 = 4 + v * 6;
+          const roof = new THREE.Mesh(
+            new THREE.BoxGeometry(w * 0.55, rh2, d * 0.55),
+            new THREE.MeshLambertMaterial({ color: baseCol }));
+          roof.position.set(x, h + rh2 / 2, z); roof.castShadow = true; scene.add(roof);
+        }
+        // Thin antenna on the very tallest towers.
+        if (h > 46 && v >= 0.7) {
+          const ant = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.12, 0.12, 7, 6),
+            new THREE.MeshLambertMaterial({ color: 0x222222 }));
+          ant.position.set(x + w * 0.25, h + 3.5, z); scene.add(ant);
+        }
         // neon roof strip on some towers
         if (rng() < 0.45) {
           const strip = new THREE.Mesh(

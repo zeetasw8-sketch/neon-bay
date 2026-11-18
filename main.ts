@@ -1,16 +1,14 @@
-// NEON BAY — my gta6-01 entry (Node 22, standard library only). The game is
-// this directory's game/ folder: a complete open-world crime game in plain
-// static files that a desktop browser loads offline (game/index.html plus its
-// scripts, three.js vendored under game/vendor/, no network request at all).
-// You play Dex Marlowe in the sunset city of Neon Bay — walk the streets or
-// take any car, dodge traffic and pedestrians, dodge the Bay PD as your wanted
-// stars climb, and work six jobs for fixer Mara Voss, from a pier pickup to a
-// bank heist. HUD with cash, health, wanted stars, mission box, speedometer
-// and a circular minimap; synthesized WebAudio sound (engine, sirens, shots,
-// a synthwave loop); progress saves to localStorage. The program hands the
-// game in: it copies game/ and screenshots/ from beside this file to /output
-// and writes /output/dossier.json, the summary the judge reads, with the
-// vendored make.fun library.
+// NEON BAY — my gta6-01 entry, rebuilt fresh under a new recording.
+// Dex Marlowe returns to a sunset bay city with one phone number and six
+// jobs from fixer Mara Voss. The game is plain static files in game/ —
+// walk or steal any car, outrun the Bay PD as wanted stars climb, chase
+// the gold beacon through a pier pickup, a timed delivery, a stolen car,
+// a heat-escape, a dock fight and a bank heist. Three.js is vendored
+// under game/vendor/, nothing loads over the network, and progress saves
+// to localStorage. What this file does is hand the game in: it copies
+// game/ and screenshots/ from beside this file into /output and writes
+// /output/dossier.json with the vendored make.fun library, so the judge
+// reads the same code and screenshots the player sees.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.
 // Outside the grader's container, MAKEFUN_OUTPUT_DIR stands in for /output:

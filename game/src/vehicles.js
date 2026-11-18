@@ -13,11 +13,36 @@ const NBVehicles = {
     body.position.y = 0.62; body.castShadow = true; g.add(body);
     const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.65, 2.2), glassMat);
     cabin.position.set(0, 1.25, -0.25); cabin.castShadow = true; g.add(cabin);
+    // Windows: the cabin was one dark slab before — now it reads as a car.
+    // Pale-blue windshield + rear window, side glass on both flanks, and a
+    // body-colour roof panel so the glass does not run to the roofline.
+    const winMat = new THREE.MeshLambertMaterial({ color: 0x9adfff });
+    const shield = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 0.08), winMat);
+    shield.position.set(0, 1.28, 0.88); shield.rotation.x = -0.22; g.add(shield);
+    const rearWin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.45, 0.08), winMat);
+    rearWin.position.set(0, 1.28, -1.36); rearWin.rotation.x = 0.22; g.add(rearWin);
+    for (const sx of [-0.94, 0.94]) {
+      const side = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.45, 1.6), winMat);
+      side.position.set(sx, 1.28, -0.25); g.add(side);
+    }
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.08, 1.8), bodyMat);
+    roof.position.set(0, 1.6, -0.25); g.add(roof);
+    // Bumpers front + rear.
+    const bumpMat = new THREE.MeshLambertMaterial({ color: 0x222222 });
+    for (const bz of [2.22, -2.22]) {
+      const bump = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.22, 0.12), bumpMat);
+      bump.position.set(0, 0.35, bz); g.add(bump);
+    }
     const wheelMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+    const hubMat = new THREE.MeshLambertMaterial({ color: 0xcccccc });
     const wg = new THREE.CylinderGeometry(0.42, 0.42, 0.35, 12);
+    const hg = new THREE.CylinderGeometry(0.22, 0.22, 0.38, 10);
     for (const [wx, wz] of [[-1.0, 1.45], [1.0, 1.45], [-1.0, -1.45], [1.0, -1.45]]) {
       const w = new THREE.Mesh(wg, wheelMat);
       w.rotation.z = Math.PI / 2; w.position.set(wx, 0.42, wz); g.add(w);
+      // Light hubcap disc on the outer face, so wheels are not flat black.
+      const hub = new THREE.Mesh(hg, hubMat);
+      hub.rotation.z = Math.PI / 2; hub.position.set(wx + Math.sign(wx) * 0.02, 0.42, wz); g.add(hub);
     }
     // headlights
     const hl = new THREE.MeshBasicMaterial({ color: 0xfff6c0 });
