@@ -1,274 +1,441 @@
-// NEON BAY — the city: roads, buildings, beach, props, collision.
-'use strict';
-const NBWorld = {
-  scene: null, colliders: [], // {x0,z0,x1,z1} building footprints
-  roadLines: [],              // road centre lines (for traffic + minimap)
-  buildings: [],
-  beacon: null, beaconLight: null,
-  garagePos: null, hospitalPos: null,
+// Neon Bay — kota 5x5 blok: jalan, gedung, pantai, dermaga, landmark (v3, dari nol).
+// Geometri statis digabung per blok jadi sedikit mesh (draw call rendah);
+// lampu jalan dan palem juga digabung. Tabrakan = daftar kotak AABB.
 
-  build(scene) {
+const THREE = window.THREE;
+
+import { WORLD, LANDMARKS, COLORS } from './config.js';
+
+// Generator acak deterministik (seed tetap) supaya tata kota sama tiap load.
+function rng(seed) {
+  let s = seed >>> 0;
+  return () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+// Tekstur kanvas: fasad dengan jendela menyala (dipakai ulang semua gedung).
+function makeWindowTexture() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2c2f3d';
+  g.fillRect(0, 0, 256, 256);
+  const lit = ['#ffd76a', '#9fd8ff', '#ff9d5c', '#c9f2ff'];
+  for (let y = 0; y < 6; y++) {
+    for (let x = 0; x < 4; x++) {
+      const on = ((x * 7 + y * 3) % 5) !== 0;
+      g.fillStyle = on ? lit[(x + y) % lit.length] : '#14161f';
+      g.fillRect(14 + x * 60, 14 + y * 40, 34, 24);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeSignTexture(text, fg, bg) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = bg;
+  g.fillRect(0, 0, 512, 128);
+  g.fillStyle = fg;
+  g.font = 'bold 64px sans-serif';
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  g.fillText(text, 256, 68);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Penampung geometri gabungan: kotak dengan warna vertex + UV berulang per meter.
+class MergeBucket {
+  constructor() {
+    this.pos = []; this.nor = []; this.uv = []; this.col = []; this.idx = [];
+    this.v = 0;
+  }
+  box(cx, cy, cz, sx, sy, sz, color, tile = 8) {
+    const x0 = cx - sx / 2, x1 = cx + sx / 2;
+    const y0 = cy - sy / 2, y1 = cy + sy / 2;
+    const z0 = cz - sz / 2, z1 = cz + sz / 2;
+    const r = ((color >> 16) & 255) / 255;
+    const g = ((color >> 8) & 255) / 255;
+    const b = (color & 255) / 255;
+    // [verts(4), normal, uSize, vSize] per sisi
+    const faces = [
+      { pts: [[x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0]], n: [1, 0, 0], u: sz, v: sy },
+      { pts: [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]], n: [-1, 0, 0], u: sz, v: sy },
+      { pts: [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], n: [0, 1, 0], u: sx, v: sz },
+      { pts: [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], n: [0, -1, 0], u: sx, v: sz },
+      { pts: [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], n: [0, 0, 1], u: sx, v: sy },
+      { pts: [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], n: [0, 0, -1], u: sx, v: sy },
+    ];
+    for (const f of faces) {
+      const us = [0, f.u / tile, f.u / tile, 0];
+      const vs = [0, 0, f.v / tile, f.v / tile];
+      for (let i = 0; i < 4; i++) {
+        this.pos.push(f.pts[i][0], f.pts[i][1], f.pts[i][2]);
+        this.nor.push(f.n[0], f.n[1], f.n[2]);
+        this.uv.push(us[i], vs[i]);
+        this.col.push(r, g, b);
+      }
+      this.idx.push(this.v, this.v + 1, this.v + 2, this.v, this.v + 2, this.v + 3);
+      this.v += 4;
+    }
+  }
+  pyramid(cx, cy, cz, w, h, color) {
+    // Piramida 4 sisi (untuk tajuk palem): alas di cy, puncak di cy+h.
+    const hw = w / 2;
+    const r = ((color >> 16) & 255) / 255;
+    const g = ((color >> 8) & 255) / 255;
+    const b = (color & 255) / 255;
+    const base = [
+      [cx - hw, cy, cz - hw], [cx + hw, cy, cz - hw],
+      [cx + hw, cy, cz + hw], [cx - hw, cy, cz + hw],
+    ];
+    const apex = [cx, cy + h, cz];
+    for (let i = 0; i < 4; i++) {
+      const a = base[i], c = base[(i + 1) % 4];
+      // normal kasar dari cross product
+      const ux = c[0] - a[0], uy = c[1] - a[1], uz = c[2] - a[2];
+      const vx = apex[0] - a[0], vy = apex[1] - a[1], vz = apex[2] - a[2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      for (const p of [a, c, apex]) {
+        this.pos.push(p[0], p[1], p[2]);
+        this.nor.push(nx, ny, nz);
+        this.uv.push(0, 0);
+        this.col.push(r, g, b);
+      }
+      this.idx.push(this.v, this.v + 1, this.v + 2);
+      this.v += 3;
+    }
+  }
+  build(material) {
+    if (this.v === 0) return null;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
+    geo.setIndex(this.idx);
+    const mesh = new THREE.Mesh(geo, material);
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+}
+
+export class World {
+  constructor(scene) {
     this.scene = scene;
-    this.colliders = []; this.buildings = []; this.roadLines = [];
-    const rng = NB_RNG(1337);
-    const C = NB_CONFIG, step = C.blockSize + C.roadWidth; // 70
-    const half = (C.blocks * step) / 2; // 175
+    this.colliders = [];   // {x0,z0,x1,z1}
+    this.beacon = null;
+    this.beaconRing = null;
+    this._buildLights();
+    this._buildGround();
+    this._buildBuildings();
+    this._buildStreetProps();
+    this._buildBeachPier();
+    this._buildBeacon();
+  }
 
-    // Sky + fog + lights (sunset over the bay)
-    scene.background = new THREE.Color(0x2a1a4e);
-    scene.fog = new THREE.Fog(0x2a1a4e, 120, 520);
-    const hemi = new THREE.HemisphereLight(0xffd9a0, 0x2a1a4e, 1.0);
-    scene.add(hemi);
-    scene.add(new THREE.AmbientLight(0x604a80, 0.35)); // lift shadow sides
-    const sun = new THREE.DirectionalLight(0xffb347, 1.25);
-    sun.position.set(120, 180, 60);
+  _buildLights() {
+    const hemi = new THREE.HemisphereLight(0x8a6fd0, 0x1a1410, 0.75);
+    this.scene.add(hemi);
+    const sun = new THREE.DirectionalLight(COLORS.sun, 1.6);
+    sun.position.set(-120, 160, -80);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -160; sun.shadow.camera.right = 160;
-    sun.shadow.camera.top = 160; sun.shadow.camera.bottom = -160;
-    sun.shadow.camera.far = 600;
-    scene.add(sun);
+    sun.shadow.mapSize.set(1024, 1024);
+    sun.shadow.camera.near = 10;
+    sun.shadow.camera.far = 420;
+    sun.shadow.camera.left = -70;
+    sun.shadow.camera.right = 70;
+    sun.shadow.camera.top = 70;
+    sun.shadow.camera.bottom = -70;
+    sun.shadow.bias = -0.0015;
     this.sun = sun;
+    this.scene.add(sun);
+    this.scene.add(sun.target);
+  }
 
-    // Ground (grass/dirt base)
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(700, 700),
-      new THREE.MeshLambertMaterial({ color: 0x2f4a2a }));
-    ground.rotation.x = -Math.PI / 2; ground.position.set(0, -0.1, 40);
-    ground.receiveShadow = true; scene.add(ground);
-
-    // Sea (south) + sand beach
-    const sea = new THREE.Mesh(
-      new THREE.PlaneGeometry(700, 180),
-      new THREE.MeshLambertMaterial({ color: 0x1a5f8a }));
-    sea.rotation.x = -Math.PI / 2; sea.position.set(0, -0.05, C.seaZ + 90);
-    scene.add(sea);
-    const sand = new THREE.Mesh(
-      new THREE.PlaneGeometry(700, 26),
-      new THREE.MeshLambertMaterial({ color: 0xd9c28a }));
-    sand.rotation.x = -Math.PI / 2; sand.position.set(0, 0.0, C.seaZ - 8);
-    sand.receiveShadow = true; scene.add(sand);
-
-    // Roads: asphalt strips on the grid + sidewalks
-    const roadMat = new THREE.MeshLambertMaterial({ color: 0x2b2b33 });
-    const walkMat = new THREE.MeshLambertMaterial({ color: 0x8a8a92 });
-    const dashMat = new THREE.MeshBasicMaterial({ color: 0xd8d8a0 });
-    for (let i = 0; i <= C.blocks; i++) {
-      const c = -half + i * step;
-      // vertical road (along z)
-      const rv = new THREE.Mesh(new THREE.PlaneGeometry(C.roadWidth, half * 2 + 40), roadMat);
-      rv.rotation.x = -Math.PI / 2; rv.position.set(c, 0.02, 20); rv.receiveShadow = true; scene.add(rv);
-      const rh = new THREE.Mesh(new THREE.PlaneGeometry(half * 2 + 40, C.roadWidth), roadMat);
-      rh.rotation.x = -Math.PI / 2; rh.position.set(0, 0.02, c); rh.receiveShadow = true; scene.add(rh);
-      this.roadLines.push({ x: c, vertical: true });
-      this.roadLines.push({ z: c, vertical: false });
-      // dashed centre lines
-      for (let d = -half; d < half; d += 12) {
-        const dv = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 4), dashMat);
-        dv.rotation.x = -Math.PI / 2; dv.position.set(c, 0.04, d); scene.add(dv);
-        const dh = new THREE.Mesh(new THREE.PlaneGeometry(4, 0.7), dashMat);
-        dh.rotation.x = -Math.PI / 2; dh.position.set(d, 0.04, c); scene.add(dh);
+  _buildGround() {
+    const groundMat = new THREE.MeshLambertMaterial({ color: COLORS.ground });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(820, 820), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, 0, 0);
+    ground.receiveShadow = true;
+    this.scene.add(ground);
+    // Jalan (aspal) — strip vertikal + horizontal digabung.
+    const roadBucket = new MergeBucket();
+    for (const line of WORLD.roadLines) {
+      roadBucket.box(line, 0.06, 13, WORLD.roadWidth, 0.12, 396, 0xffffff, 1);
+      roadBucket.box(13, 0.06, line, 396, 0.12, WORLD.roadWidth, 0xffffff, 1);
+    }
+    const roadMat = new THREE.MeshLambertMaterial({ color: COLORS.road, vertexColors: true });
+    const roads = roadBucket.build(roadMat);
+    if (roads) { roads.castShadow = false; this.scene.add(roads); }
+    // Trotoar di kedua sisi tiap jalan.
+    const walkBucket = new MergeBucket();
+    for (const line of WORLD.roadLines) {
+      for (const off of [-10.5, 10.5]) {
+        walkBucket.box(line + off, 0.05, 13, 7, 0.1, 396, 0xffffff, 1);
+        walkBucket.box(13, 0.05, line + off, 396, 0.1, 7, 0xffffff, 1);
       }
     }
-    // Sidewalk slabs around each block
-    for (let bx = 0; bx < C.blocks; bx++) for (let bz = 0; bz < C.blocks; bz++) {
-      const cx = -half + C.roadWidth / 2 + bx * step + C.blockSize / 2;
-      const cz = -half + C.roadWidth / 2 + bz * step + C.blockSize / 2;
-      const sw = new THREE.Mesh(new THREE.PlaneGeometry(C.blockSize + 6, C.blockSize + 6), walkMat);
-      sw.rotation.x = -Math.PI / 2; sw.position.set(cx, 0.03, cz); sw.receiveShadow = true; scene.add(sw);
-    }
-
-    // Buildings: window textures from canvas, varied heights + neon roofs.
-    // Visual variety pass: a tower is no longer one flat box — tall ones get
-    // a set-back rooftop box, half get a lit ground-floor shopfront band,
-    // and the tallest get a thin antenna, so the skyline reads as a city
-    // instead of a row of slabs. All of it is visual only: the collision
-    // footprint stays the base box, so movement and missions are unchanged.
-    const winTex = this._windowTextures(rng);
-    const palette = [0x5a6b8a, 0x8a5a6b, 0x4a7a6a, 0x7a6a4a, 0x6a5a9a, 0x3a4a6a, 0x9a7a5a];
-    const neonCols = [0xff2ea6, 0x00e5ff, 0xffd94d, 0x7dff5e];
-    for (let bx = 0; bx < C.blocks; bx++) for (let bz = 0; bz < C.blocks; bz++) {
-      const cx = -half + C.roadWidth / 2 + bx * step + C.blockSize / 2;
-      const cz = -half + C.roadWidth / 2 + bz * step + C.blockSize / 2;
-      // skip the garage block (home base) entirely — no random buildings there
-      const isGarageBlock = (bx === 2 && bz === 4);
-      const n = isGarageBlock ? 0 : (rng() < 0.55 ? 2 : 1);
-      for (let k = 0; k < n; k++) {
-        const w = 16 + rng() * 14, d = 16 + rng() * 14, h = 14 + rng() * 46;
-        const ox = (k === 0 ? -1 : 1) * (n === 2 ? 11 : 0) + (rng() - 0.5) * 6;
-        const oz = (rng() - 0.5) * 8;
-        const x = cx + ox, z = cz + oz;
-        const baseCol = palette[Math.floor(rng() * palette.length)];
-        const mat = new THREE.MeshLambertMaterial({
-          color: baseCol,
-          map: winTex[Math.floor(rng() * winTex.length)],
-        });
-        const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
-        b.position.set(x, h / 2, z); b.castShadow = true; b.receiveShadow = true;
-        scene.add(b);
-        this.buildings.push(b);
-        this.colliders.push({ x0: x - w / 2, x1: x + w / 2, z0: z - d / 2, z1: z + d / 2 });
-        // Deterministic per-building variety (from grid position, not the
-        // seeded stream, so the rest of the city layout does not shift).
-        const v = ((bx * 31 + bz * 17 + k * 13) % 10) / 10;
-        // Lit shopfront band around the ground floor.
-        if (v < 0.5) {
-          const shop = new THREE.Mesh(
-            new THREE.BoxGeometry(w + 0.2, 2.8, d + 0.2),
-            new THREE.MeshLambertMaterial({ color: neonCols[Math.floor(v * 8) % neonCols.length] }));
-          shop.position.set(x, 1.4, z); scene.add(shop);
-        }
-        // Set-back rooftop box on tall towers, breaking the flat silhouette.
-        if (h > 32 && v < 0.7) {
-          const rh2 = 4 + v * 6;
-          const roof = new THREE.Mesh(
-            new THREE.BoxGeometry(w * 0.55, rh2, d * 0.55),
-            new THREE.MeshLambertMaterial({ color: baseCol }));
-          roof.position.set(x, h + rh2 / 2, z); roof.castShadow = true; scene.add(roof);
-        }
-        // Thin antenna on the very tallest towers.
-        if (h > 46 && v >= 0.7) {
-          const ant = new THREE.Mesh(
-            new THREE.CylinderGeometry(0.12, 0.12, 7, 6),
-            new THREE.MeshLambertMaterial({ color: 0x222222 }));
-          ant.position.set(x + w * 0.25, h + 3.5, z); scene.add(ant);
-        }
-        // neon roof strip on some towers
-        if (rng() < 0.45) {
-          const strip = new THREE.Mesh(
-            new THREE.BoxGeometry(w + 0.6, 0.7, 0.7),
-            new THREE.MeshBasicMaterial({ color: neonCols[Math.floor(rng() * neonCols.length)] }));
-          strip.position.set(x, h + 0.4, z - d / 2); scene.add(strip);
-          const strip2 = strip.clone();
-          strip2.position.set(x, h + 0.4, z + d / 2); scene.add(strip2);
-        }
+    const walkMat = new THREE.MeshLambertMaterial({ color: COLORS.sidewalk, vertexColors: true });
+    const walks = walkBucket.build(walkMat);
+    if (walks) this.scene.add(walks);
+    // Marka jalan putus-putus (garis tengah).
+    const markBucket = new MergeBucket();
+    for (const line of WORLD.roadLines) {
+      for (let t = -175; t <= 175; t += 12) {
+        markBucket.box(line, 0.13, t, 0.5, 0.02, 5, 0xffffff, 1);
+        markBucket.box(t, 0.13, line, 5, 0.02, 0.5, 0xffffff, 1);
       }
     }
+    const markMat = new THREE.MeshBasicMaterial({ color: 0xd8d8d8, vertexColors: true });
+    const marks = markBucket.build(markMat);
+    if (marks) this.scene.add(marks);
+  }
 
-    // Garage (Mara's base) — low building with a big gold sign
-    const g = new THREE.Group();
-    const gBody = new THREE.Mesh(new THREE.BoxGeometry(34, 9, 20),
-      new THREE.MeshLambertMaterial({ color: 0x39415e }));
-    gBody.position.y = 4.5; gBody.castShadow = true; gBody.receiveShadow = true; g.add(gBody);
-    const sign = new THREE.Mesh(new THREE.BoxGeometry(30, 2.4, 0.6),
-      new THREE.MeshBasicMaterial({ color: 0xffd94d }));
-    sign.position.set(0, 10.2, 10.2); g.add(sign);
-    g.position.set(NB_CONFIG.garage.x, 0, NB_CONFIG.garage.z);
-    scene.add(g);
-    this.colliders.push({ x0: NB_CONFIG.garage.x - 17, x1: NB_CONFIG.garage.x + 17, z0: NB_CONFIG.garage.z - 10, z1: NB_CONFIG.garage.z + 10 });
-    this.garagePos = { x: NB_CONFIG.garage.x, z: NB_CONFIG.garage.z };
+  _addCollider(cx, cz, w, d) {
+    this.colliders.push({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 });
+  }
 
-    // Meridian Bank landmark (mission 6 target)
-    const bank = new THREE.Mesh(new THREE.BoxGeometry(26, 18, 22),
-      new THREE.MeshLambertMaterial({ color: 0xcfc4a0 }));
-    bank.position.set(-70, 9, -70); bank.castShadow = true; scene.add(bank);
-    this.colliders.push({ x0: -83, x1: -57, z0: -81, z1: -59 });
-    const bankSign = new THREE.Mesh(new THREE.BoxGeometry(20, 2, 0.6),
-      new THREE.MeshBasicMaterial({ color: 0x00e5ff }));
-    bankSign.position.set(-70, 19, -59); scene.add(bankSign);
-
-    // Hospital (respawn point)
-    const hosp = new THREE.Mesh(new THREE.BoxGeometry(24, 14, 18),
-      new THREE.MeshLambertMaterial({ color: 0xe8e8e8 }));
-    hosp.position.set(NB_CONFIG.hospital.x, 7, NB_CONFIG.hospital.z); hosp.castShadow = true; scene.add(hosp);
-    this.colliders.push({ x0: NB_CONFIG.hospital.x - 12, x1: NB_CONFIG.hospital.x + 12, z0: NB_CONFIG.hospital.z - 9, z1: NB_CONFIG.hospital.z + 9 });
-    this.hospitalPos = { x: NB_CONFIG.hospital.x, z: NB_CONFIG.hospital.z };
-
-    // Street lamps along roads + palm trees near the beach
-    const lampMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
-    const bulbMat = new THREE.MeshBasicMaterial({ color: 0xffe9a8 });
-    let lampLights = 0;
-    for (let i = 0; i <= C.blocks; i++) {
-      const c = -half + i * step;
-      for (let d = -half + 35; d < half; d += 70) {
-        const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.18, 7, 6), lampMat);
-        pole.position.set(c + C.roadWidth / 2 + 1.5, 3.5, d); scene.add(pole);
-        const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6), bulbMat);
-        bulb.position.set(c + C.roadWidth / 2 + 1.5, 7.1, d); scene.add(bulb);
-        if (lampLights < 8) { // a few real lights only — perf on low-end GPUs
-          lampLights++;
-          const pl = new THREE.PointLight(0xffe9a8, 0.5, 26);
-          pl.position.set(c + C.roadWidth / 2 + 1.5, 7, d); scene.add(pl);
-        }
-      }
-    }
-    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x6b4a2a });
-    const leafMat = new THREE.MeshLambertMaterial({ color: 0x2f8f4a });
-    for (let i = 0; i < 14; i++) {
-      const x = -180 + rng() * 360, z = C.seaZ - 22 + rng() * 8;
-      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.45, 6, 6), trunkMat);
-      trunk.position.set(x, 3, z); trunk.rotation.z = (rng() - 0.5) * 0.25; scene.add(trunk);
-      const top = new THREE.Mesh(new THREE.SphereGeometry(2.4, 8, 6), leafMat);
-      top.position.set(x, 6.8, z); top.scale.y = 0.55; scene.add(top);
-    }
-    // Pier (mission 1/5 target) — wooden deck into the sea
-    const pierMat = new THREE.MeshLambertMaterial({ color: 0x7a5a34 });
-    const pier = new THREE.Mesh(new THREE.BoxGeometry(10, 1, 34), pierMat);
-    pier.position.set(150, 0.6, C.seaZ + 8); pier.castShadow = true; scene.add(pier);
-
-    // Mission beacon (reused, moved by missions)
-    const beaconGeo = new THREE.CylinderGeometry(3, 3, 60, 16, 1, true);
-    const beaconMat = new THREE.MeshBasicMaterial({
-      color: 0xffd94d, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
-    this.beacon = new THREE.Mesh(beaconGeo, beaconMat);
-    this.beacon.position.set(0, 30, 120); this.beacon.visible = false; scene.add(this.beacon);
-    this.beaconLight = new THREE.PointLight(0xffd94d, 1.2, 40);
-    this.beaconLight.position.set(0, 4, 120); this.beaconLight.visible = false; scene.add(this.beaconLight);
-  },
-
-  _windowTextures(rng) {
-    const out = [];
-    for (let v = 0; v < 4; v++) {
-      const cv = document.createElement('canvas'); cv.width = 128; cv.height = 256;
-      const g = cv.getContext('2d');
-      g.fillStyle = '#ffffff'; g.fillRect(0, 0, 128, 256);
-      for (let y = 8; y < 248; y += 18) for (let x = 8; x < 120; x += 16) {
-        const lit = rng() < 0.4;
-        g.fillStyle = lit ? (rng() < 0.5 ? '#ffd94d' : '#9adfff') : '#1c2438';
-        g.fillRect(x, y, 10, 12);
-      }
-      const tex = new THREE.CanvasTexture(cv);
-      out.push(tex);
-    }
-    return out;
-  },
-
-  // Circle (x,z,r) vs building AABBs. Returns corrected position or null.
-  resolveCircle(x, z, r) {
-    for (const c of this.colliders) {
-      const cx = Math.max(c.x0, Math.min(x, c.x1));
-      const cz = Math.max(c.z0, Math.min(z, c.z1));
-      const dx = x - cx, dz = z - cz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < r * r) {
-        if (d2 < 1e-6) { // centre inside box: push out along smallest axis
-          const pl = x - c.x0, pr = c.x1 - x, pt = z - c.z0, pb = c.z1 - z;
-          const m = Math.min(pl, pr, pt, pb);
-          if (m === pl) x = c.x0 - r; else if (m === pr) x = c.x1 + r;
-          else if (m === pt) z = c.z0 - r; else z = c.z1 + r;
+  _buildBuildings() {
+    const winTex = makeWindowTexture();
+    const facadeMat = new THREE.MeshLambertMaterial({ map: winTex, vertexColors: true });
+    const neonMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    const shopMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    const antennaBucket = new MergeBucket();
+    const tints = [0xffffff, 0xf2e8d8, 0xd8e2f2, 0xf2d8d8, 0xd8f2e2];
+    const neonCols = [0x00e5ff, 0xff2ea6, 0xffe14d, 0x7cff5e];
+    let tallest = null;
+    for (const bx of WORLD.blockCenters) {
+      for (const bz of WORLD.blockCenters) {
+        const isGarageBlock = (bx === 0 && bz === 140);
+        const isBankBlock = (bx === -70 && bz === -70);
+        const isHospBlock = (bx === 140 && bz === 140);
+        const bucket = new MergeBucket();
+        const neonBucket = new MergeBucket();
+        const shopBucket = new MergeBucket();
+        if (isGarageBlock || isBankBlock || isHospBlock) {
+          // Blok landmark: hanya gedung landmarknya (dibangun di bawah).
         } else {
-          const d = Math.sqrt(d2);
-          x = cx + (dx / d) * r; z = cz + (dz / d) * r;
+          const r = rng(bx * 131 + bz * 57 + 7);
+          const n = 1 + Math.floor(r() * 2); // 1-2 gedung per blok
+          for (let i = 0; i < n; i++) {
+            const w = 16 + r() * 14;
+            const d = 14 + r() * 12;
+            const h = 8 + r() * 20;
+            const cx = bx + (r() - 0.5) * (WORLD.blockSize - w - 8);
+            const cz = bz + (r() - 0.5) * (WORLD.blockSize - d - 8);
+            const tint = tints[Math.floor(r() * tints.length)];
+            bucket.box(cx, h / 2, cz, w, h, d, tint, 8);
+            this._addCollider(cx, cz, w, d);
+            if (h > 18) {
+              bucket.box(cx, h + 1.5, cz, w * 0.45, 3, d * 0.45, tint, 8); // kotak atap
+            }
+            if (r() < 0.5) {
+              shopBucket.box(cx, 1.2, cz + d / 2 + 0.15, w * 0.8, 2.2, 0.3, neonCols[Math.floor(r() * 4)], 1);
+            }
+            if (r() < 0.45) {
+              const nc = neonCols[Math.floor(r() * 4)];
+              neonBucket.box(cx, h + 0.25, cz, w * 0.9, 0.5, 0.5, nc, 1);
+              neonBucket.box(cx, h + 0.25, cz, 0.5, 0.5, d * 0.9, nc, 1);
+            }
+            if (!tallest || h > tallest.h) tallest = { cx, cz, h };
+          }
         }
-        return { x, z, hit: true };
+        const mesh = bucket.build(facadeMat);
+        if (mesh) { mesh.castShadow = true; this.scene.add(mesh); }
+        const neon = neonBucket.build(neonMat);
+        if (neon) this.scene.add(neon);
+        const shop = shopBucket.build(shopMat);
+        if (shop) this.scene.add(shop);
       }
     }
-    return null;
-  },
-  collides(x, z, r) { return this.resolveCircle(x, z, r) !== null; },
-  clampBounds(x, z) {
-    const B = NB_CONFIG.worldBound;
-    return { x: Math.max(-B, Math.min(B, x)), z: Math.max(-B, Math.min(B + 26, z)) };
-  },
+    // Antena di gedung tertinggi.
+    if (tallest) {
+      antennaBucket.box(tallest.cx, tallest.h + 5, tallest.cz, 0.5, 10, 0.5, 0x888888, 1);
+      const ant = antennaBucket.build(new THREE.MeshBasicMaterial({ vertexColors: true }));
+      if (ant) this.scene.add(ant);
+    }
+    this._buildLandmarks(facadeMat);
+  }
+
+  _buildLandmarks(facadeMat) {
+    // Garasi (markas) — papan emas.
+    const g = LANDMARKS.garage.building;
+    const gBucket = new MergeBucket();
+    gBucket.box(g.cx, g.h / 2, g.cz, g.w, g.h, g.d, 0xe8c25a, 8);
+    const gMesh = gBucket.build(facadeMat);
+    if (gMesh) { gMesh.castShadow = true; this.scene.add(gMesh); }
+    this._addCollider(g.cx, g.cz, g.w, g.d);
+    this._addSign('GARAGE', 0x1a1a1a, 0xffd76a, g.cx, g.h + 1.2, g.cz + g.d / 2 + 0.2, 16, 4);
+    // Bank — lebih tinggi, papan biru.
+    const b = LANDMARKS.bank.building;
+    const bBucket = new MergeBucket();
+    bBucket.box(b.cx, b.h / 2, b.cz, b.w, b.h, b.d, 0xd8e2f2, 8);
+    const bMesh = bBucket.build(facadeMat);
+    if (bMesh) { bMesh.castShadow = true; this.scene.add(bMesh); }
+    this._addCollider(b.cx, b.cz, b.w, b.d);
+    this._addSign('MERIDIAN BANK', 0xffffff, 0x1d4e9b, b.cx, b.h + 1.2, b.cz + b.d / 2 + 0.2, 20, 5);
+    // Rumah sakit — putih, salib merah.
+    const h = LANDMARKS.hospital.building;
+    const hBucket = new MergeBucket();
+    hBucket.box(h.cx, h.h / 2, h.cz, h.w, h.h, h.d, 0xf2f2f2, 8);
+    const hMesh = hBucket.build(facadeMat);
+    if (hMesh) { hMesh.castShadow = true; this.scene.add(hMesh); }
+    this._addCollider(h.cx, h.cz, h.w, h.d);
+    this._addSign('HOSPITAL', 0xcc2222, 0xffffff, h.cx, h.h + 1.2, h.cz + h.d / 2 + 0.2, 16, 4);
+  }
+
+  _addSign(text, fg, bg, x, y, z, w, h) {
+    const tex = makeSignTexture(text, '#' + fg.toString(16).padStart(6, '0'), '#' + bg.toString(16).padStart(6, '0'));
+    const mat = new THREE.MeshBasicMaterial({ map: tex });
+    const plane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
+    plane.position.set(x, y, z);
+    this.scene.add(plane);
+  }
+
+  _buildStreetProps() {
+    // Tiang lampu (digabung) + kepala lampu menyala (digabung).
+    const poleBucket = new MergeBucket();
+    const headBucket = new MergeBucket();
+    const r = rng(99);
+    for (const lx of WORLD.roadLines) {
+      for (const lz of WORLD.roadLines) {
+        if (r() < 0.4) continue;
+        const px = lx + 9, pz = lz + 9;
+        poleBucket.box(px, 3, pz, 0.35, 6, 0.35, 0x333333, 1);
+        headBucket.box(px, 6.1, pz, 1.1, 0.4, 0.5, 0xffe9a8, 1);
+      }
+    }
+    const poles = poleBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    if (poles) this.scene.add(poles);
+    const heads = headBucket.build(new THREE.MeshBasicMaterial({ vertexColors: true }));
+    if (heads) this.scene.add(heads);
+    // Palem di sepanjang pantai.
+    const trunkBucket = new MergeBucket();
+    const leafBucket = new MergeBucket();
+    for (let x = -180; x <= 180; x += 30) {
+      trunkBucket.box(x, 2.5, 190, 0.5, 5, 0.5, 0x8a6b45, 1);
+      leafBucket.pyramid(x, 5, 190, 5, 2.2, 0x2e8b57);
+    }
+    const trunks = trunkBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    if (trunks) this.scene.add(trunks);
+    const leaves = leafBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    if (leaves) this.scene.add(leaves);
+  }
+
+  _buildBeachPier() {
+    // Pasir selatan.
+    const sand = new THREE.Mesh(
+      new THREE.PlaneGeometry(420, 30),
+      new THREE.MeshLambertMaterial({ color: COLORS.sand })
+    );
+    sand.rotation.x = -Math.PI / 2;
+    sand.position.set(0, 0.08, 196);
+    sand.receiveShadow = true;
+    this.scene.add(sand);
+    // Laut.
+    const sea = new THREE.Mesh(
+      new THREE.PlaneGeometry(820, 220),
+      new THREE.MeshLambertMaterial({ color: COLORS.sea })
+    );
+    sea.rotation.x = -Math.PI / 2;
+    sea.position.set(0, 0.05, 318);
+    this.scene.add(sea);
+    // Dermaga kayu di x=150, dari pantai ke laut.
+    const pierBucket = new MergeBucket();
+    for (let z = 178; z <= 210; z += 4) {
+      pierBucket.box(150, 0.35, z, 9, 0.5, 3.6, 0x9a7b4f, 1);
+    }
+    for (const dz of [180, 196, 210]) {
+      pierBucket.box(146, 0.1, dz, 0.5, 1.2, 0.5, 0x6b4f2a, 1);
+      pierBucket.box(154, 0.1, dz, 0.5, 1.2, 0.5, 0x6b4f2a, 1);
+    }
+    const pier = pierBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
+    if (pier) { pier.castShadow = true; this.scene.add(pier); }
+  }
+
+  _buildBeacon() {
+    const geo = new THREE.CylinderGeometry(1.6, 2.4, 90, 12, 1, true);
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffd76a, transparent: true, opacity: 0.35,
+      blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+    });
+    this.beacon = new THREE.Mesh(geo, mat);
+    this.beacon.position.set(0, 45, 0);
+    this.beacon.visible = false;
+    this.scene.add(this.beacon);
+    const ringGeo = new THREE.RingGeometry(2.5, 3.5, 24);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color: 0xffd76a, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
+    });
+    this.beaconRing = new THREE.Mesh(ringGeo, ringMat);
+    this.beaconRing.rotation.x = -Math.PI / 2;
+    this.beaconRing.position.set(0, 0.2, 0);
+    this.beaconRing.visible = false;
+    this.scene.add(this.beaconRing);
+  }
+
   setBeacon(x, z, on) {
     if (!this.beacon) return;
-    this.beacon.visible = on; this.beaconLight.visible = on;
-    if (on) { this.beacon.position.set(x, 30, z); this.beaconLight.position.set(x, 4, z); }
-  },
+    this.beacon.visible = on;
+    this.beaconRing.visible = on;
+    if (on) {
+      this.beacon.position.set(x, 45, z);
+      this.beaconRing.position.set(x, 0.2, z);
+    }
+  }
+
+  // Pindahkan kamera bayangan mengikuti pemain (area sempit = murah).
+  followShadow(px, pz) {
+    if (!this.sun) return;
+    this.sun.position.set(px - 120, 160, pz - 80);
+    this.sun.target.position.set(px, 0, pz);
+    this.sun.target.updateMatrixWorld();
+  }
+
   update(dt, t) {
     if (this.beacon && this.beacon.visible) {
-      this.beacon.rotation.y += dt * 0.6;
-      this.beacon.material.opacity = 0.28 + Math.sin(t * 3) * 0.1;
+      this.beacon.material.opacity = 0.28 + 0.12 * Math.sin(t * 3);
+      const s = 1 + 0.08 * Math.sin(t * 3);
+      this.beaconRing.scale.set(s, s, 1);
     }
-  },
-};
+  }
+
+  // Dorong lingkaran (x,z,r) keluar dari semua AABB; kembalikan posisi baru.
+  resolveCollision(x, z, r) {
+    for (const c of this.colliders) {
+      const nx = Math.max(c.x0, Math.min(x, c.x1));
+      const nz = Math.max(c.z0, Math.min(z, c.z1));
+      const dx = x - nx, dz = z - nz;
+      const d2 = dx * dx + dz * dz;
+      if (d2 < r * r) {
+        if (d2 > 0.0001) {
+          const d = Math.sqrt(d2);
+          x = nx + (dx / d) * r;
+          z = nz + (dz / d) * r;
+        } else {
+          // Tepat di dalam kotak: dorong ke sisi terdekat.
+          const dl = x - c.x0, dr = c.x1 - x, dn = z - c.z0, df = c.z1 - z;
+          const m = Math.min(dl, dr, dn, df);
+          if (m === dl) x = c.x0 - r;
+          else if (m === dr) x = c.x1 + r;
+          else if (m === dn) z = c.z0 - r;
+          else z = c.z1 + r;
+        }
+      }
+    }
+    return { x, z };
+  }
+}

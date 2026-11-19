@@ -1,134 +1,236 @@
-// NEON BAY — pedestrians and mission thugs.
-'use strict';
-const NBPeople = {
-  peds: [],
-  thugs: [],
+// Neon Bay — pejalan kaki + preman misi 5 (v3, dari nol).
+// Pejalan kaki berjalan di trotoar dan lari menjauh bila mobil pemain melaju
+// kencang ke arah mereka. Preman mengejar pemain dan memukul dari dekat.
 
-  makePersonMesh(shirt, pants, skin) {
-    const g = new THREE.Group();
-    const skinMat = new THREE.MeshLambertMaterial({ color: skin });
-    const shirtMat = new THREE.MeshLambertMaterial({ color: shirt });
-    const pantsMat = new THREE.MeshLambertMaterial({ color: pants });
-    const legL = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.75, 0.22), pantsMat);
-    legL.position.set(-0.14, 0.38, 0); g.add(legL);
-    const legR = legL.clone(); legR.position.x = 0.14; g.add(legR);
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.75, 0.34), shirtMat);
-    body.position.y = 1.12; body.castShadow = true; g.add(body);
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8), skinMat);
-    head.position.y = 1.72; head.castShadow = true; g.add(head);
-    const armL = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.65, 0.16), shirtMat);
-    armL.position.set(-0.42, 1.12, 0); g.add(armL);
-    const armR = armL.clone(); armR.position.x = 0.42; g.add(armR);
-    g.userData.parts = { legL, legR, armL, armR };
-    return g;
-  },
+const THREE = window.THREE;
 
-  init(scene) {
-    this.peds = []; this.thugs = [];
-    const rng = NB_RNG(4242);
-    const C = NB_CONFIG, step = C.blockSize + C.roadWidth, half = (C.blocks * step) / 2;
-    const shirts = [0xe364a5, 0x2ec4b6, 0xffd94d, 0x7dff5e, 0xff7a59, 0x9a7bff, 0xffffff, 0x4a90d9];
-    const skins = [0xf1c27d, 0xe0ac69, 0xc68642, 0x8d5524, 0xffdbac];
-    for (let i = 0; i < C.pedCount; i++) {
-      const mesh = this.makePersonMesh(
-        shirts[Math.floor(rng() * shirts.length)], 0x2a2a3a,
-        skins[Math.floor(rng() * skins.length)]);
-      // Spawn on a sidewalk near a road
-      const vertical = rng() < 0.5;
-      const line = -half + Math.floor(rng() * (C.blocks + 1)) * step;
-      const along = -half + 10 + rng() * (half * 2 - 20);
-      const off = (rng() < 0.5 ? -1 : 1) * (C.roadWidth / 2 + 2.5);
-      mesh.position.set(vertical ? line + off : along, 0, vertical ? along : line + off);
-      mesh.rotation.y = rng() * Math.PI * 2;
-      scene.add(mesh);
-      this.peds.push({
-        mesh, speed: 1.1 + rng() * 0.9, heading: rng() * Math.PI * 2,
-        dirChange: 2 + rng() * 4, flee: 0, bob: rng() * 6,
-        walkAxis: vertical ? 'z' : 'x',
-      });
-    }
-  },
+import { WORLD, PEDS } from './config.js';
 
-  spawnThugs(scene, x, z, n) {
-    this.clearThugs();
-    for (let i = 0; i < n; i++) {
-      const mesh = this.makePersonMesh(0x1a1a1a, 0x1a1a1a, 0xe0ac69);
-      // red bandana strip
-      const band = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.1, 0.54),
-        new THREE.MeshBasicMaterial({ color: 0xff2222 }));
-      band.position.y = 1.86; mesh.add(band);
-      mesh.position.set(x + (i - 1) * 4, 0, z + (i % 2) * 3);
-      scene.add(mesh);
-      this.thugs.push({ mesh, hp: 3, speed: 2.6, heading: 0, attackCd: 0, bob: i * 2,
-        homeX: x + (i - 1) * 4, homeZ: z + (i % 2) * 3, wanderT: 0 });
-    }
-    return this.thugs;
-  },
-  clearThugs() {
-    for (const t of this.thugs) NBWorld.scene.remove(t.mesh);
+const MAX_PEDS = 24;
+
+export class People {
+  constructor(scene, world) {
+    this.world = world;
+    this.peds = [];
     this.thugs = [];
-  },
+    this._respawnTimer = 0;
+    const bodyGeo = new THREE.BoxGeometry(0.7, 1.1, 0.45);
+    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    this.bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, MAX_PEDS);
+    this.bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.bodies.castShadow = true;
+    scene.add(this.bodies);
+    const headGeo = new THREE.SphereGeometry(0.26, 10, 8);
+    const headMat = new THREE.MeshLambertMaterial({ color: 0xe8b88a });
+    this.heads = new THREE.InstancedMesh(headGeo, headMat, MAX_PEDS);
+    this.heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(this.heads);
+    // Bandana merah preman.
+    const bandGeo = new THREE.BoxGeometry(0.56, 0.14, 0.56);
+    const bandMat = new THREE.MeshBasicMaterial({ color: 0xcc2222 });
+    this.bands = new THREE.InstancedMesh(bandGeo, bandMat, 6);
+    this.bands.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    scene.add(this.bands);
+    this._m = new THREE.Matrix4();
+    this._q = new THREE.Quaternion();
+    this._e = new THREE.Euler();
+    this._v = new THREE.Vector3();
+    this._s = new THREE.Vector3(1, 1, 1);
+    this._zero = new THREE.Matrix4().makeScale(0, 0, 0);
+    this._tmpColor = new THREE.Color();
+    this._spawnPeds();
+  }
 
-  update(dt, playerPos, playerSpeed) {
+  _rng(seed) {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    };
+  }
+
+  // Posisi + mesh hidup per orang (alat tes: ped.pos.set / ped.mesh.position).
+  _attachLive(p) {
+    const pos = [p.x, p.z];
+    Object.defineProperties(pos, {
+      0: { get: () => p.x, set: (v) => { p.x = v; }, enumerable: true, configurable: true },
+      1: { get: () => p.z, set: (v) => { p.z = v; }, enumerable: true, configurable: true },
+      x: { get: () => p.x, set: (v) => { p.x = v; }, enumerable: true, configurable: true },
+      y: { get: () => 0, set: () => {}, enumerable: true, configurable: true },
+      z: { get: () => p.z, set: (v) => { p.z = v; }, enumerable: true, configurable: true },
+    });
+    pos.set = (x, y, z) => { p.x = x; p.z = (z !== undefined ? z : (y !== undefined ? y : p.z)); };
+    pos.clone = () => [p.x, p.z];
+    p.pos = pos;
+    p.mesh = new THREE.Object3D();
+    p.mesh.position.set(p.x, 0, p.z);
+    return p;
+  }
+
+  _spawnPeds() {
+    const r = this._rng(31337);
+    const colors = [0x3a6fd2, 0xd2a23a, 0x6a3ad2, 0x2a8a5a, 0xd25a8a, 0x888888, 0x2a2a2a];
+    for (let i = 0; i < PEDS.count; i++) {
+      const vertical = r() < 0.5;
+      const line = WORLD.roadLines[Math.floor(r() * WORLD.roadLines.length)];
+      const off = (r() < 0.5 ? -10.5 : 10.5);
+      const along = -170 + r() * 340;
+      const p = {
+        x: vertical ? line + off : along,
+        z: vertical ? along : line + off,
+        heading: r() * Math.PI * 2,
+        speed: PEDS.walkSpeed * (0.8 + r() * 0.4),
+        color: colors[Math.floor(r() * colors.length)],
+        vertical, line, off,
+        flee: 0, fleeX: 0, fleeZ: 0,
+        alive: true, isThug: false,
+      };
+      this._attachLive(p);
+      this.peds.push(p);
+      this.bodies.setColorAt(this.peds.length - 1, this._tmpColor.setHex(p.color));
+    }
+    if (this.bodies.instanceColor) this.bodies.instanceColor.needsUpdate = true;
+  }
+
+  spawnThugs(x, z, count) {
+    this.clearThugs();
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2;
+      const t = {
+        x: x + Math.cos(a) * 6, z: z + Math.sin(a) * 6,
+        heading: 0, speed: 3.4, color: 0x1a1a1a,
+        hp: 3, alive: true, isThug: true,
+        punchTimer: 0, knockX: 0, knockZ: 0,
+      };
+      this._attachLive(t);
+      this.thugs.push(t);
+    }
+  }
+
+  clearThugs() {
+    this.thugs = [];
+  }
+
+  thugsAlive() {
+    return this.thugs.filter((t) => t.alive).length;
+  }
+
+  // Pejalan kaki terdekat dari titik (untuk tembakan/pukulan).
+  nearestPed(x, z, d) {
+    let best = null, bd = d;
     for (const p of this.peds) {
-      // Flee if the player is close and fast (in a car) or recently violent
-      const dx = p.mesh.position.x - playerPos.x, dz = p.mesh.position.z - playerPos.z;
-      const d = Math.hypot(dx, dz);
-      if (d < 7 && playerSpeed > 6) p.flee = 2.5;
+      if (!p.alive) continue;
+      const dd = Math.hypot(p.x - x, p.z - z);
+      if (dd < bd) { bd = dd; best = p; }
+    }
+    return best;
+  }
+
+  update(dt, player) {
+    // Pejalan kaki yang tumbang muncul lagi perlahan supaya kota tidak kosong.
+    this._respawnTimer -= dt;
+    if (this._respawnTimer <= 0) {
+      this._respawnTimer = 15;
+      const dead = this.peds.find((p) => !p.alive);
+      if (dead) {
+        const vertical = Math.random() < 0.5;
+        const line = WORLD.roadLines[Math.floor(Math.random() * WORLD.roadLines.length)];
+        const off = (Math.random() < 0.5 ? -10.5 : 10.5);
+        const along = -170 + Math.random() * 340;
+        dead.x = vertical ? line + off : along;
+        dead.z = vertical ? along : line + off;
+        dead.heading = Math.random() * Math.PI * 2;
+        dead.flee = 0;
+        dead.alive = true;
+      }
+    }
+    // Pejalan kaki: jalan di trotoar; lari bila mobil pemain melaju ke arahnya.
+    for (const p of this.peds) {
+      if (!p.alive) continue;
+      const dx = player.x - p.x, dz = player.z - p.z;
+      const dist = Math.hypot(dx, dz);
+      if (player.inCar && player.speed > 8 && dist < PEDS.fleeRadius) {
+        p.flee = 1.2;
+        p.fleeX = -dx / Math.max(dist, 0.01);
+        p.fleeZ = -dz / Math.max(dist, 0.01);
+      }
       if (p.flee > 0) {
         p.flee -= dt;
-        p.heading = Math.atan2(dx, dz);
-        p.speed = 4.2;
+        p.heading = Math.atan2(p.fleeX, p.fleeZ);
+        p.x += p.fleeX * PEDS.fleeSpeed * dt;
+        p.z += p.fleeZ * PEDS.fleeSpeed * dt;
       } else {
-        p.dirChange -= dt;
-        if (p.dirChange <= 0) { p.dirChange = 2 + Math.random() * 4; p.heading += (Math.random() - 0.5) * 2.2; p.speed = 1.1 + Math.random() * 0.9; }
+        // Jalan lurus di trotoar; di ujung jalan, balik arah.
+        const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
+        p.x += fx * p.speed * dt;
+        p.z += fz * p.speed * dt;
+        if (p.vertical) {
+          if (p.z > 178 || p.z < -178) p.heading += Math.PI;
+        } else if (p.x > 178 || p.x < -178) {
+          p.heading += Math.PI;
+        }
       }
-      let nx = p.mesh.position.x + Math.sin(p.heading) * p.speed * dt;
-      let nz = p.mesh.position.z + Math.cos(p.heading) * p.speed * dt;
-      const hit = NBWorld.resolveCircle(nx, nz, 0.6);
-      if (hit) { nx = hit.x; nz = hit.z; p.heading += Math.PI / 2; }
-      const cl = NBWorld.clampBounds(nx, nz);
-      p.mesh.position.x = cl.x; p.mesh.position.z = cl.z;
-      p.mesh.rotation.y = p.heading;
-      // walk bob
-      p.bob += dt * p.speed * 4;
-      const s = Math.sin(p.bob) * 0.35;
-      const parts = p.mesh.userData.parts;
-      parts.legL.rotation.x = s; parts.legR.rotation.x = -s;
-      parts.armL.rotation.x = -s * 0.7; parts.armR.rotation.x = s * 0.7;
+      const fixed = this.world.resolveCollision(p.x, p.z, 0.5);
+      p.x = fixed.x; p.z = fixed.z;
     }
-    // Thugs chase and punch the player — but only once the player comes
-    // to their turf (within ~35m of their post); otherwise they loiter.
-    const game = window.NBGame;
+    // Preman: kejar pemain, pukul bila dekat.
     for (const t of this.thugs) {
-      const dx = playerPos.x - t.mesh.position.x, dz = playerPos.z - t.mesh.position.z;
-      const d = Math.hypot(dx, dz);
-      t.attackCd -= dt;
-      if (d > 35) {
-        // loiter around home post
-        t.wanderT -= dt;
-        if (t.wanderT <= 0) { t.wanderT = 2 + Math.random() * 3; t.heading = Math.random() * Math.PI * 2; }
-        const hx = t.mesh.position.x + Math.sin(t.heading) * 0.8 * dt;
-        const hz = t.mesh.position.z + Math.cos(t.heading) * 0.8 * dt;
-        if (Math.hypot(hx - t.homeX, hz - t.homeZ) < 10) { t.mesh.position.x = hx; t.mesh.position.z = hz; }
-        t.mesh.rotation.y = t.heading;
-        continue;
+      if (!t.alive) continue;
+      t.punchTimer -= dt;
+      const dx = player.x - t.x, dz = player.z - t.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 1.6) {
+        t.heading = Math.atan2(dx, dz);
+        t.x += Math.sin(t.heading) * t.speed * dt;
+        t.z += Math.cos(t.heading) * t.speed * dt;
+      } else if (t.punchTimer <= 0) {
+        t.punchTimer = 0.9;
+        player.hurt(8, 'thug');
       }
-      t.heading = Math.atan2(dx, dz);
-      if (d > 1.6) {
-        t.mesh.position.x += Math.sin(t.heading) * t.speed * dt;
-        t.mesh.position.z += Math.cos(t.heading) * t.speed * dt;
-      } else if (t.attackCd <= 0 && game && game.state === 'playing') {
-        t.attackCd = 1.1;
-        game.damagePlayer(8, 'thug');
-        // punch anim
-        t.mesh.userData.parts.armR.rotation.x = -1.4;
-        setTimeout(() => { if (t.mesh.userData.parts) t.mesh.userData.parts.armR.rotation.x = 0; }, 180);
-      }
-      t.mesh.rotation.y = t.heading;
-      t.bob += dt * 5;
-      const s = Math.sin(t.bob) * 0.3;
-      t.mesh.userData.parts.legL.rotation.x = s; t.mesh.userData.parts.legR.rotation.x = -s;
+      // Knockback meluruh.
+      t.x += t.knockX * dt;
+      t.z += t.knockZ * dt;
+      t.knockX *= Math.max(0, 1 - dt * 6);
+      t.knockZ *= Math.max(0, 1 - dt * 6);
+      const fixed = this.world.resolveCollision(t.x, t.z, 0.6);
+      t.x = fixed.x; t.z = fixed.z;
     }
-  },
-};
+  }
+
+  sync() {
+    const all = [...this.peds, ...this.thugs];
+    for (let i = 0; i < all.length && i < MAX_PEDS; i++) {
+      const p = all[i];
+      const vis = p.alive ? 1 : 0;
+      p.mesh.position.set(p.x, 0, p.z);
+      p.mesh.rotation.y = p.heading;
+      this._e.set(0, p.heading, 0);
+      this._q.setFromEuler(this._e);
+      this._v.set(p.x, 0.75, p.z);
+      this._m.compose(this._v, this._q, this._s);
+      this.bodies.setMatrixAt(i, vis ? this._m : this._zero);
+      this._v.set(p.x, 1.55, p.z);
+      this._m.compose(this._v, this._q, this._s);
+      this.heads.setMatrixAt(i, vis ? this._m : this._zero);
+    }
+    for (let i = all.length; i < MAX_PEDS; i++) {
+      this.bodies.setMatrixAt(i, this._zero);
+      this.heads.setMatrixAt(i, this._zero);
+    }
+    this.bodies.instanceMatrix.needsUpdate = true;
+    this.heads.instanceMatrix.needsUpdate = true;
+    // Bandana hanya untuk preman hidup.
+    let bi = 0;
+    for (const t of this.thugs) {
+      if (!t.alive || bi >= 6) continue;
+      this._e.set(0, t.heading, 0);
+      this._q.setFromEuler(this._e);
+      this._v.set(t.x, 1.62, t.z);
+      this._m.compose(this._v, this._q, this._s);
+      this.bands.setMatrixAt(bi, this._m);
+      bi++;
+    }
+    for (; bi < 6; bi++) this.bands.setMatrixAt(bi, this._zero);
+    this.bands.instanceMatrix.needsUpdate = true;
+  }
+}

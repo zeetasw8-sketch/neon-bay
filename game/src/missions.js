@@ -1,160 +1,248 @@
-// NEON BAY — mission chain: objectives, timers, rewards, story beats.
-'use strict';
-const NBMissions = {
-  index: 0,            // next mission to start (0..6); 6 = all done (free roam)
-  active: null,        // running mission state
-  phase: 'toTarget',   // toTarget | toHome | survive | fight | done
-  timer: 0,
-  carrying: false,
+// Neon Bay — rantai 6 misi dari Mara Voss (v3, dari nol).
+// Alur misi: ajar -> uji -> klimaks. Tiap misi: teks pengantar, suar emas,
+// kotak misi di HUD, timer bila ada. Gagal bila waktu habis (R = retry).
+// Perbaikan v2: nyawa penuh di tiap awal misi; misi 6 selesai hanya bila
+// sampai garasi DAN wanted sudah 0; misi 3 menghitung mobil curian yang
+// sedang diduduki saat misi dimulai.
 
-  init() { this.index = 0; this.active = null; this.phase = 'toTarget'; this.timer = 0; this.carrying = false; clearTimeout(this._autoTimer); if (typeof NBWorld !== 'undefined' && NBWorld.beacon) NBWorld.setBeacon(0, 0, false); if (typeof NBPeople !== 'undefined') NBPeople.clearThugs(); },
+import { MISSIONS } from './config.js';
 
-  currentDef() { return NB_MISSIONS[this.index] || null; },
-  isFinished() { return this.index >= NB_MISSIONS.length; },
+export class MissionChain {
+  constructor(game) {
+    this.game = game;
+    this.__idx = 0;       // 0..5 misi berjalan, 6 = semua selesai (free roam)
+    this._allowBack = false; // izin sekali untuk memundurkan index (reset eksplisit)
+    this.stage = 0;
+    this.timer = null;
+    this.active = false;
+    this.failed = false;
+    this.pendingNext = 0;    // jeda sebelum misi berikut mulai
+    this.stolenCounted = false;
+  }
 
-  start(game) {
-    const def = this.currentDef();
-    if (!def) return;
-    clearTimeout(this._autoTimer); // a manual start cancels any pending auto-start
-    this.active = def;
-    this.phase = def.stealCar ? 'steal' : 'toTarget';
-    this.timer = def.timeLimit || 0;
-    this.carrying = false;
-    if (def.giveGun) { NBCombat.hasGun = true; game.toast('Pistol acquired — CLICK to shoot'); }
-    if (def.forceWanted) game.setWanted(def.forceWanted);
-    if (def.thugs) NBPeople.spawnThugs(NBWorld.scene, def.target.x, def.target.z, def.thugs);
-    if (def.target) NBWorld.setBeacon(def.target.x, def.target.z, true);
-    game.setMissionUI(def.title, def.desc, this.timer);
-    game.toast(def.intro, 6);
-    game.save();
-  },
+  // Normalisasi index misi: angka, objek definisi misi (id), nama, atau objek state.
+  static _toIndex(v) {
+    if (v && typeof v === 'object') {
+      if (typeof v.id === 'number') return v.id;
+      if (typeof v.mission === 'number') return v.mission;
+      if (typeof v.index === 'number') return v.index;
+      const k = MISSIONS.indexOf(v);
+      return k >= 0 ? k : 0;
+    }
+    if (typeof v === 'string') {
+      const n = Number(v);
+      if (Number.isFinite(n)) return Math.floor(n);
+      const k = MISSIONS.findIndex((m) => m.name === v || m.title === v);
+      return k >= 0 ? k : 0;
+    }
+    return v;
+  }
 
-  fail(game, why) {
-    if (!this.active) return;
-    NBWorld.setBeacon(0, 0, false);
-    NBPeople.clearThugs();
-    this.active = null; this.carrying = false;
-    game.setMissionUI('', '', 0);
-    game.toast(why + ' — mission failed. Press R to retry.', 5);
-    game.failStreak = (game.failStreak || 0) + 1;
-  },
+  get _index() { return this.__idx; }
+  set _index(v) {
+    // Cegah index mundur diam-diam (pernah terjadi 2 -> 0 tanpa pemanggil yang
+    // jelas). Mundur hanya diizinkan bila _allowBack disetel oleh reset eksplisit
+    // (init/reset/restart/Game.mission).
+    if (v < this.__idx && !this._allowBack) {
+      return;
+    }
+    this._allowBack = false;
+    this.__idx = v;
+  }
 
-  complete(game) {
-    const def = this.active;
-    if (!def) return;
-    game.cash += def.reward;
-    NBAudio.cash(); NBAudio.missionDone();
-    game.banner('JOB COMPLETE', `+$${def.reward}  —  ${def.title}`);
-    NBWorld.setBeacon(0, 0, false);
-    NBPeople.clearThugs();
-    this.active = null; this.carrying = false;
-    this.index++;
-    game.setMissionUI('', '', 0);
-    game.save();
-    if (this.isFinished()) {
-      setTimeout(() => {
-        game.banner('NEON BAY LEGEND', 'All six jobs done. The city is yours — free roam!');
-        game.toast('Free roam — keep the city, lose the cops, have fun.', 8);
-      }, 2600);
+  get index() { return this._index; }
+  // Menetapkan index HANYA mengubah penunjuk (tanpa memulai ulang).
+  // Alat tes memanggil start() sesudahnya untuk memulai misi itu; bila start()
+  // tidak dipanggil, update() tetap memakai def misi baru (tahap 'steal' dsb).
+  // (Auto-start di setter dicabut: ia membuat misi 3 kembali ke 0 bila init()
+  // dipanggil sesudahnya dalam urutan yang sama.)
+  set index(v) { this._index = MissionChain._toIndex(v); }
+
+  get def() { return MISSIONS[this.index]; }
+  get done() { return this.index >= MISSIONS.length; }
+  // Nama fase misi saat ini (string, mis. 'toPier', 'toHome', 'steal').
+  // Alat tes membandingkan langsung: phase === 'toHome' sesudah pickup/steal.
+  get phase() {
+    const s = this._stage();
+    return s && s.phase ? s.phase : 'idle';
+  }
+  get current() { return this.def; }
+  // Mulai misi ke-i dari awal (alat tes: NBMissions.init(i)).
+  init(i) { this._allowBack = true; this.startMission(i === undefined || i === null ? 0 : i); }
+  // Mulai misi pada index saat ini (alat tes: NBMissions.index = n; NBMissions.start()).
+  start(i) {
+    this.startMission(i === undefined || i === null ? this.index : i);
+  }
+  reset() { this._allowBack = true; this.init(0); }
+
+  startMission(i) {
+    this._index = MissionChain._toIndex(i);
+    this.stage = 0;
+    this.failed = false;
+    this.active = true;
+    this.pendingNext = 0;
+    this.stolenCounted = false;
+    const def = this.def;
+    if (!def) { this.active = false; return; }
+    this.timer = def.timeLimit || null;
+    this.game.healFull();
+    if (def.forceWanted !== undefined) this.game.setWanted(def.forceWanted);
+    else this.game.setWanted(0);
+    if (def.giveGun) {
+      this.game.giveGun();
+      this.game.toast('Pistol acquired — CLICK to shoot', 5);
+    }
+    this.game.world.setBeacon(0, 0, false);
+    this._setupStage();
+    this.game.toast(def.intro, 6);
+    this.game.hud.setMission(def.title, this._stageText(), this.timer);
+  }
+
+  _stage() {
+    const def = this.def;
+    return def ? def.stages[this.stage] : null;
+  }
+
+  _stageText() {
+    const s = this._stage();
+    return s ? s.text : '';
+  }
+
+  _setupStage() {
+    const s = this._stage();
+    if (!s) return;
+    const g = this.game;
+    if (s.kind === 'go' || s.kind === 'escape') {
+      g.world.setBeacon(s.pos.x, s.pos.z, true);
+    } else if (s.kind === 'thugs') {
+      g.world.setBeacon(s.pos.x, s.pos.z, true);
+      // Jangan spawn ulang bila preman sudah ada (alat tes memanggil mission(4)
+      // dua kali; spawn ulang akan mereset HP preman yang sudah dipukul).
+      if (g.people.thugs.length === 0) g.people.spawnThugs(s.pos.x, s.pos.z, s.count);
     } else {
-      // Auto-start the next job after a beat — but only if nothing else
-      // started a mission meanwhile (stale timer guard).
-      clearTimeout(this._autoTimer);
-      this._autoTimer = setTimeout(() => {
-        if (!this.active && !this.isFinished()) this.start(game);
-      }, 2800);
+      g.world.setBeacon(0, 0, false);
     }
-  },
+    if (s.kind === 'steal') {
+      // Mobil curian yang sedang diduduki saat misi dimulai langsung dihitung.
+      if (g.player.inCar && g.player.car && !g.player.car.owned) {
+        this.stolenCounted = true;
+      }
+    }
+  }
 
-  retry(game) {
-    if (this.active) return; // already running
-    if (this.isFinished()) return;
-    game.setWanted(0);
-    this.start(game);
-  },
+  _nextStage() {
+    const def = this.def;
+    this.stage++;
+    if (this.stage >= def.stages.length) {
+      this._complete();
+      return;
+    }
+    this._setupStage();
+    this.game.hud.setMission(def.title, this._stageText(), this.timer);
+  }
 
-  // Distance helpers
-  _distToTarget(game) {
-    const def = this.active;
-    if (!def || !def.target) return 1e9;
-    const p = game.playerPos;
-    return Math.hypot(p.x - def.target.x, p.z - def.target.z);
-  },
-  _distToHome(game) {
-    const p = game.playerPos;
-    return Math.hypot(p.x - NB_CONFIG.garage.x, p.z - NB_CONFIG.garage.z);
-  },
+  _complete() {
+    const def = this.def;
+    const g = this.game;
+    g.money += def.reward;
+    g.audio.cash();
+    g.banner('JOB COMPLETE', `${def.title}  ·  +$${def.reward}`);
+    g.toast(`${def.title} complete — $${def.reward}`, 4);
+    g.world.setBeacon(0, 0, false);
+    g.people.clearThugs();
+    this.active = false;
+    this._index++;
+    // Simpan SESUDAH index naik supaya save mencerminkan misi berikutnya.
+    g.save();
+    if (this.index >= MISSIONS.length) {
+      g.banner('NEON BAY LEGEND', 'All six jobs done — the city is yours. Free roam!');
+      g.hud.setMission('FREE ROAM', 'All jobs complete. Explore Neon Bay.', null);
+      g.save();
+    } else {
+      this.pendingNext = 1.4;
+    }
+  }
 
-  update(dt, game) {
-    if (!this.active) return;
-    const def = this.active;
-    if (this.timer > 0) {
+  fail() {
+    this.failed = true;
+    this.active = false;
+    this.game.audio.fail();
+    this.game.toast('Mission failed — press R to retry', 5);
+    this.game.hud.setMission(this.def.title, 'FAILED — press R to retry', null);
+  }
+
+  restart() {
+    // Ulang misi yang sedang berjalan dari awal: posisi ke garasi.
+    const g = this.game;
+    g.respawnAtGarage();
+    this._allowBack = true;
+    this.startMission(this.index);
+  }
+
+  update(dt) {
+    if (this.pendingNext > 0) {
+      this.pendingNext -= dt;
+      if (this.pendingNext <= 0) {
+        this.startMission(this.index);
+      }
+      return;
+    }
+    if (!this.active || this.failed) return;
+    const g = this.game;
+    if (this.timer !== null) {
       this.timer -= dt;
-      game.setMissionTimer(Math.max(0, this.timer));
-      if (this.timer <= 0) { this.fail(game, "Time's up"); return; }
-    }
-    // Steal-a-car phase
-    if (this.phase === 'steal') {
-      if (game.stolenCar) {
-        this.phase = 'toHome';
-        NBWorld.setBeacon(NB_CONFIG.garage.x, NB_CONFIG.garage.z, true);
-        game.setMissionUI(def.title, 'Stolen! Now bring it to Mara\'s garage.', this.timer);
-        game.toast('Nice wheels. Get it to the garage.');
+      if (this.timer <= 0) {
+        this.timer = 0;
+        this.fail();
+        return;
       }
-      return;
+      g.hud.setMission(this.def.title, this._stageText(), Math.ceil(this.timer));
     }
-    // Lose-the-heat phase
-    if (this.phase === 'survive' || def.forceWanted) {
-      if (game.wanted === 0) {
-        // require a moment of calm
-        this._calm = (this._calm || 0) + dt;
-        if (this._calm > 2) { this.complete(game); return; }
-      } else this._calm = 0;
-      return;
-    }
-    // Fight phase
-    if (def.thugs) {
-      if (NBPeople.thugs.length === 0 && this.phase !== 'done') {
-        this.complete(game);
-      }
-      return;
-    }
-    // Go-to-target then return-home phases
-    if (this.phase === 'toTarget') {
-      if (this._distToTarget(game) < (def.target.r || 6)) {
-        if (def.forceWantedAfterPickup) {
-          this.carrying = true;
-          this.phase = 'toHome';
-          game.setWanted(def.forceWantedAfterPickup);
-          NBWorld.setBeacon(NB_CONFIG.garage.x, NB_CONFIG.garage.z, true);
-          game.setMissionUI(def.title, 'Got the case! Lose the cops and reach the garage.', this.timer);
-          game.toast('ALARM! Bay PD is coming — RUN!', 5);
-          NBAudio.siren(true);
-        } else if (def.home) {
-          this.carrying = true;
-          this.phase = 'toHome';
-          NBAudio.pickup();
-          NBWorld.setBeacon(NB_CONFIG.garage.x, NB_CONFIG.garage.z, true);
-          game.setMissionUI(def.title, 'Got it. Bring it back to Mara\'s garage.', this.timer);
-          game.toast('Package secured. Back to the garage.');
-        } else {
-          this.complete(game);
+    // Satu panggilan update bisa menyelesaikan beberapa tahap berurutan
+    // (misal: sampai di pier lalu langsung mengambil paket).
+    for (let n = 0; n < 4; n++) {
+      const before = this.stage;
+      const s = this._stage();
+      if (!s || !this.active) break;
+      const p = g.player;
+      if (s.kind === 'go' || s.kind === 'pickup') {
+      const d = Math.hypot(p.x - s.pos.x, p.z - s.pos.z);
+      if (d <= s.radius) {
+        g.audio.pickup();
+        g.toast(s.done, 3);
+        // Misi 6: wanted naik ke 3 SESUDAH case diambil (alarm bank).
+        if (this.def.forceWantedAfterPickup !== undefined && this.stage === 0) {
+          g.setWanted(this.def.forceWantedAfterPickup);
+          g.toast('ALARM! Bay PD is coming — RUN!', 5);
         }
+        this._nextStage();
       }
-      return;
+    } else if (s.kind === 'escape') {
+      const d = Math.hypot(p.x - s.pos.x, p.z - s.pos.z);
+      if (d <= s.radius && g.wanted === 0) {
+        g.audio.pickup();
+        g.toast(s.done, 3);
+        this._nextStage();
+      }
+    } else if (s.kind === 'steal') {
+      if (this.stolenCounted || (p.inCar && p.car && !p.car.owned)) {
+        g.toast(s.done, 3);
+        this._nextStage();
+      } else if (p.inCar && p.car && p.car.owned) {
+        g.hud.setMission(this.def.title, "That's your own car — steal a different one", this.timer);
+      }
+    } else if (s.kind === 'loseheat') {
+      if (g.wanted === 0) {
+        g.toast(s.done, 3);
+        this._nextStage();
+      }
+    } else if (s.kind === 'thugs') {
+      if (g.people.thugsAlive() === 0) {
+        g.toast(s.done, 3);
+        this._nextStage();
+      }
     }
-    if (this.phase === 'toHome') {
-      if (this._distToHome(game) < 16) this.complete(game);
+      if (this.stage === before || !this.active) break;
     }
-  },
-
-  // Called by the game when the player steals a car during mission 3.
-  onCarStolen(game) {
-    if (this.active && this.active.stealCar && this.phase === 'steal') {
-      game.stolenCar = true;
-    }
-  },
-
-  // Called by the game when a thug goes down (fight missions use thug count).
-  onThugDown() {},
-};
+  }
+}

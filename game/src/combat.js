@@ -1,92 +1,83 @@
-// NEON BAY — combat: punch + pistol, raycast shooting, hit feedback.
-'use strict';
-const NBCombat = {
-  hasGun: false,
-  punchCd: 0, shootCd: 0,
-  tracers: [],
+// Neon Bay — combat: pukul + pistol (v3, dari nol).
+// Garis tembak DIPAKAI ULANG (satu garis, geometri tetap) supaya tidak bocor.
+// Aturan panas: tembakan yang meleset TIDAK menaikkan wanted; tembakan yang
+// mengenai preman (musuh) juga tidak; hanya yang mengenai pejalan kaki yang
+// menaikkan wanted. Pukulan ke preman tidak menaikkan wanted.
 
-  init() { this.hasGun = false; this.punchCd = 0; this.shootCd = 0; this.tracers = []; },
+const THREE = window.THREE;
 
-  // Called on mouse click while playing on foot.
-  shoot(game) {
-    if (!this.hasGun || this.shootCd > 0 || game.inCar) return;
-    this.shootCd = 0.28;
-    NBAudio.shoot();
-    game.addWanted(1);
-    const cam = game.camera;
-    const dir = new THREE.Vector3();
-    cam.getWorldDirection(dir);
-    const origin = game.playerPos.clone(); origin.y = 1.5;
-    // Find nearest thug / ped roughly along the aim ray
-    let best = null, bestD = 60;
-    const targets = [...NBPeople.thugs];
-    for (const t of targets) {
-      const tp = new THREE.Vector3(t.mesh.position.x, 1.3, t.mesh.position.z);
-      const to = tp.clone().sub(origin);
-      const along = to.dot(dir);
-      if (along < 1 || along > bestD) continue;
-      const perp = to.clone().addScaledVector(dir, -along).length();
-      if (perp < 1.6) { best = t; bestD = along; }
-    }
-    this.spawnTracer(origin, dir, bestD);
-    game.shake(0.08);
-    if (best) {
-      best.hp -= 1;
-      game.toast(best.hp > 0 ? 'Hit!' : 'Thug down!');
-      if (best.hp <= 0) {
-        const i = NBPeople.thugs.indexOf(best);
-        if (i >= 0) NBPeople.thugs.splice(i, 1);
-        NBWorld.scene.remove(best.mesh);
-        game.onThugDown();
-      }
-    }
-  },
+import { PLAYER } from './config.js';
 
-  punch(game) {
-    if (this.punchCd > 0 || game.inCar) return;
-    this.punchCd = 0.45;
-    NBAudio.punch();
-    const pp = game.playerPos;
-    for (let i = NBPeople.thugs.length - 1; i >= 0; i--) {
-      const t = NBPeople.thugs[i];
-      const d = Math.hypot(t.mesh.position.x - pp.x, t.mesh.position.z - pp.z);
-      if (d < 2.4) {
-        t.hp -= 1;
-        // knockback
-        const dx = t.mesh.position.x - pp.x, dz = t.mesh.position.z - pp.z;
-        const l = Math.hypot(dx, dz) || 1;
-        t.mesh.position.x += (dx / l) * 1.6; t.mesh.position.z += (dz / l) * 1.6;
-        if (t.hp <= 0) {
-          NBPeople.thugs.splice(i, 1);
-          NBWorld.scene.remove(t.mesh);
-          game.onThugDown();
-          game.toast('Thug down!');
-        } else game.toast('Hit!');
-      }
-    }
-    // Shoving a pedestrian counts as a crime
-    for (const p of NBPeople.peds) {
-      const d = Math.hypot(p.mesh.position.x - pp.x, p.mesh.position.z - pp.z);
-      if (d < 2.2) { p.flee = 3; game.addWanted(1); }
-    }
-  },
-
-  spawnTracer(origin, dir, len) {
-    const geo = new THREE.BufferGeometry().setFromPoints([
-      origin, origin.clone().addScaledVector(dir, len)]);
-    const line = new THREE.Line(geo,
-      new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.95 }));
-    NBWorld.scene.add(line);
-    this.tracers.push({ line, life: 0.09 });
-  },
+export class Combat {
+  constructor(scene) {
+    this.scene = scene;
+    this.punchTimer = 0;
+    this.gunTimer = 0;
+    this.tracerTimer = 0;
+    // Satu garis tembak yang dipakai ulang untuk semua tembakan.
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.9 });
+    this.tracer = new THREE.Line(geo, mat);
+    this.tracer.visible = false;
+    this.tracer.frustumCulled = false;
+    scene.add(this.tracer);
+  }
 
   update(dt) {
-    this.punchCd = Math.max(0, this.punchCd - dt);
-    this.shootCd = Math.max(0, this.shootCd - dt);
-    for (let i = this.tracers.length - 1; i >= 0; i--) {
-      const t = this.tracers[i];
-      t.life -= dt;
-      if (t.life <= 0) { NBWorld.scene.remove(t.line); this.tracers.splice(i, 1); }
+    this.punchTimer -= dt;
+    this.gunTimer -= dt;
+    if (this.tracerTimer > 0) {
+      this.tracerTimer -= dt;
+      if (this.tracerTimer <= 0) this.tracer.visible = false;
     }
-  },
-};
+  }
+
+  // Pukulan: mengenai SEMUA preman + pejalan kaki dalam jangkauan
+  // (tanpa cek arah — tinju jarak dekat).
+  // Kembalikan daftar yang kena (dengan arah dorong).
+  punch(px, pz, heading, people) {
+    if (this.punchTimer > 0) return [];
+    this.punchTimer = PLAYER.punchCooldown;
+    const hits = [];
+    const check = (t) => {
+      if (!t.alive) return;
+      const dx = t.x - px, dz = t.z - pz;
+      const d = Math.hypot(dx, dz);
+      if (d < PLAYER.punchRange + 0.6) {
+        hits.push({ target: t, dirX: dx / Math.max(d, 0.01), dirZ: dz / Math.max(d, 0.01) });
+      }
+    };
+    for (const t of people.thugs) check(t);
+    for (const p of people.peds) check(p);
+    return hits;
+  }
+
+  // Tembakan: sinar dari pemain ke arah kamera (yaw kamera). Kembalikan hasil:
+  // {hit: 'thug'|'ped'|null, target, endX, endZ}
+  shoot(px, pz, py, aimYaw, people) {
+    if (this.gunTimer > 0) return null;
+    this.gunTimer = PLAYER.gunCooldown;
+    const dx = Math.sin(aimYaw), dz = Math.cos(aimYaw);
+    let best = null, bestD = PLAYER.gunRange;
+    const test = (t, kind) => {
+      if (!t.alive) return;
+      const rx = t.x - px, rz = t.z - pz;
+      const along = rx * dx + rz * dz;
+      if (along < 0.5 || along > bestD) return;
+      const perp = Math.abs(rx * dz - rz * dx);
+      if (perp < 1.5) { bestD = along; best = { hit: kind, target: t }; }
+    };
+    for (const t of people.thugs) test(t, 'thug');
+    for (const p of people.peds) test(p, 'ped');
+    const endX = px + dx * bestD, endZ = pz + dz * bestD;
+    // Gambar ulang garis yang sama (posisi ditulis ke buffer yang sudah ada).
+    const pos = this.tracer.geometry.attributes.position;
+    pos.setXYZ(0, px, py, pz);
+    pos.setXYZ(1, endX, py, endZ);
+    pos.needsUpdate = true;
+    this.tracer.visible = true;
+    this.tracerTimer = 0.12;
+    return { ...(best || { hit: null, target: null }), endX, endZ };
+  }
+}

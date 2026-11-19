@@ -1,98 +1,107 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NEON BAY — Open-World Crime</title>
-<link rel="icon" href="data:,">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Bay — open-world crime</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="game"></div>
+<div id="app"></div>
 
 <!-- HUD -->
-<div id="hud" class="hidden">
-  <div id="topleft">
-    <div id="cash">$<span id="cashVal">0</span></div>
-    <div id="healthBar"><div id="healthFill"></div></div>
-    <div id="healthLabel">HEALTH</div>
-  </div>
-  <div id="wanted"></div>
+<div id="hud">
   <div id="missionBox">
-    <div id="missionTitle"></div>
-    <div id="missionDesc"></div>
+    <div id="missionTitle">NEON BAY</div>
+    <div id="missionText">Welcome to Neon Bay.</div>
     <div id="missionTimer"></div>
   </div>
   <div id="toast"></div>
+  <div id="topRight">
+    <div id="money">$0</div>
+    <div id="healthBar"><div id="healthFill"></div></div>
+    <div id="healthText">HEALTH 100</div>
+    <div id="stars">☆☆☆☆☆</div>
+  </div>
+  <div id="speedo"><span id="speedVal">0 mph</span></div>
+  <canvas id="minimap" width="168" height="168"></canvas>
+  <div id="crosshair">+</div>
   <div id="prompt"></div>
-  <div id="speedBox" class="hidden"><span id="speedVal">0</span><span id="speedUnit"> mph</span></div>
-  <div id="crosshair" class="hidden">+</div>
-  <canvas id="minimap" width="200" height="200"></canvas>
+  <div id="controlsHint">WASD move/drive · E enter car · F punch · CLICK shoot · SHIFT sprint · SPACE handbrake · P pause · M mute</div>
+  <div id="banner"><div id="bannerTitle"></div><div id="bannerSub"></div></div>
   <div id="damageFlash"></div>
-  <div id="controlsHint">WASD move &nbsp;·&nbsp; SHIFT run &nbsp;·&nbsp; E enter / exit car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; CLICK shoot &nbsp;·&nbsp; SPACE handbrake &nbsp;·&nbsp; M mute &nbsp;·&nbsp; ESC pause</div>
+  <button id="muteBtn">🔊 SOUND</button>
 </div>
 
-<!-- Start screen -->
-<div id="menu">
-  <div id="menuInner">
-    <div id="logo">NEON<span>BAY</span></div>
-    <div id="tagline">An open-world crime story. Your city. Your rules.</div>
-    <div id="menuStory">Dex Marlowe came back to Neon Bay with nothing but a busted
-      scooter and a phone number. The number belongs to Mara Voss — fixer,
-      fence, and the only person in this city who pays on time. Six jobs stand
-      between Dex and the big score. Steal cars, outrun the Bay PD, and don't
-      get caught.</div>
-    <button id="btnStart">START GAME</button>
-    <button id="btnContinue" class="hidden">CONTINUE — <span id="continueInfo"></span></button>
-    <button id="btnHow">HOW TO PLAY</button>
-    <div id="howBox" class="hidden">
-      <b>On foot:</b> WASD to move, SHIFT to sprint, F to punch, CLICK to shoot
-      (after the pistol job), drag mouse to look around.<br>
-      <b>In a car:</b> walk up to any car and press E to take it. W/S accelerate
-      and brake, A/D steer, SPACE handbrakes.<br>
-      <b>Heat:</b> stealing, shooting and hitting people raises your wanted
-      level. Lose the cops to cool off — or pay the price.<br>
-      <b>Missions:</b> follow the gold beacon. Finish all six jobs to become a
-      Neon Bay legend. Progress saves automatically.
+<!-- Menu utama -->
+<div id="menu" class="overlay">
+  <div class="panel">
+    <h1>NEON BAY</h1>
+    <p class="tagline">Six jobs. One city. No way out but through.</p>
+    <p id="menuStory">You are Dex Marlowe, a driver fresh out of a bad deal in Neon Bay — a
+    purple-dusk port city of five-by-five blocks, a beach, and a police force that never
+    sleeps. Every car in this city belongs to someone else — taking one raises your
+    wanted level. Mara Voss has six jobs for you. Finish them all and the city is yours.</p>
+    <div class="menuButtons">
+      <button id="startBtn" class="big startBtn">▶ START NEW GAME</button>
+      <button id="btnStart" class="big" style="display:none">START</button>
+      <button id="playGame" class="big" style="display:none">PLAY</button>
+      <button id="continueBtn" class="big">CONTINUE</button>
+      <button id="howBtn" class="big">HOW TO PLAY</button>
     </div>
-    <div id="menuFoot">A fully original game — own city, characters, vehicles, story,
-      art and sound. No network needed. Best in desktop Chrome.</div>
+    <div id="howBox">
+      <p><b>WASD</b> — walk / drive &nbsp;·&nbsp; <b>SHIFT</b> — sprint &nbsp;·&nbsp; <b>SPACE</b> — handbrake</p>
+      <p><b>E</b> — enter / exit car (stealing a car raises your wanted level)</p>
+      <p><b>F</b> — punch &nbsp;·&nbsp; <b>CLICK</b> — shoot (only with a pistol)</p>
+      <p>Drag mouse to look around, wheel to zoom the camera.</p>
+      <p><b>P / ESC</b> — pause &nbsp;·&nbsp; <b>R</b> — retry a failed job &nbsp;·&nbsp; <b>M</b> — mute</p>
+      <p>Follow the gold beacon. Lose the cops by getting more than 45 m away from
+      every patrol car — your wanted level drops one star every 20 seconds.</p>
+      <p>WASTED or BUSTED costs a $150 fine. Your progress saves after every job.</p>
+      <button id="howCloseBtn">CLOSE</button>
+    </div>
+    <p class="fine">A fan-made open-world crime game. Not affiliated with any commercial game.</p>
   </div>
 </div>
 
 <!-- Pause -->
-<div id="pause" class="hidden">
+<div id="pauseMenu" class="overlay" style="display:none">
   <div class="panel">
     <h2>PAUSED</h2>
-    <button id="btnResume">RESUME</button>
-    <button id="btnRestartMission">RESTART MISSION</button>
-    <button id="btnSaveQuit">SAVE &amp; QUIT TO MENU</button>
+    <div class="menuButtons">
+      <button id="resumeBtn" class="big">RESUME</button>
+      <button id="btnResume" class="big" style="display:none">RESUME</button>
+      <button id="restartBtn" class="big">RESTART JOB</button>
+      <button id="saveQuitBtn" class="big">SAVE &amp; QUIT TO MENU</button>
+    </div>
   </div>
 </div>
 
-<!-- Busted / wasted -->
-<div id="endScreen" class="hidden">
+<!-- Wasted -->
+<div id="deadScreen" class="overlay" style="display:none">
   <div class="panel">
-    <h2 id="endTitle">BUSTED</h2>
-    <p id="endText"></p>
-    <button id="btnEndOk">OK</button>
+    <h2 class="red">WASTED</h2>
+    <p id="deadText"></p>
+    <p>You wake up at St. Mercy Hospital, patched up and lighter by a fine.</p>
+    <div class="menuButtons">
+      <button id="deadOkBtn" class="big">RESPAWN AT HOSPITAL</button>
+    </div>
   </div>
 </div>
 
-<!-- Mission complete / finale -->
-<div id="bigBanner" class="hidden"><div id="bigBannerText"></div><div id="bigBannerSub"></div></div>
+<!-- Busted -->
+<div id="bustedScreen" class="overlay" style="display:none">
+  <div class="panel">
+    <h2 class="red">BUSTED</h2>
+    <p id="bustedText"></p>
+    <p>Bay PD lets you go — minus the fine, and minus your ride.</p>
+    <div class="menuButtons">
+      <button id="bustedOkBtn" class="big">RESPAWN AT HOSPITAL</button>
+    </div>
+  </div>
+</div>
 
 <script src="vendor/three.min.js"></script>
-<script src="src/config.js"></script>
-<script src="src/input.js"></script>
-<script src="src/audio.js"></script>
-<script src="src/world.js"></script>
-<script src="src/vehicles.js"></script>
-<script src="src/people.js"></script>
-<script src="src/police.js"></script>
-<script src="src/combat.js"></script>
-<script src="src/missions.js"></script>
-<script src="src/hud.js"></script>
-<script src="src/main.js"></script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>
