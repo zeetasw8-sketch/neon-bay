@@ -355,6 +355,7 @@ class Game {
     this.audio.ensure();
     this.audio.startMusic();
     this.missions.startMission(0);
+    this._faceObjective(); // RONDE 3: frame pertama sudah menghadap beacon
     this.save();
   }
 
@@ -388,6 +389,7 @@ class Game {
       this.hud.setMission('FREE ROAM', 'All jobs complete. Explore Neon Bay.', null);
     } else {
       this.missions.startMission(s.mission || 0);
+      this._faceObjective(); // RONDE 3: frame pertama sudah menghadap beacon
     }
     this.setWanted(s.wanted || 0);
   }
@@ -446,6 +448,7 @@ class Game {
     this._snapCamera(); // D5: kamera langsung ikut ke rumah sakit
     // Misi yang sedang berjalan dimulai lagi dari awal.
     if (!this.missions.done) this.missions.startMission(this.missions.index);
+    this._faceObjective(); // RONDE 3: respawn menghadap objective
   }
 
   _die() {
@@ -570,6 +573,21 @@ class Game {
     const cy = 1.6 + dist * Math.sin(this.camPitch);
     this._camPos.set(cx, cy, cz);
     this._camYawSmooth = yaw;
+  }
+
+  // RONDE 3: kamera awal HARUS menghadap objective — di spawn, bearing ke
+  // pier = 63° dari sumbu kamera awal, sedangkan setengah FOV horizontal
+  // cuma ~45°, jadi beacon TIDAK ADA di frame pertama sama sekali (diukur
+  // di Pages live: proyeksi beacon (-792,-397), jauh di luar layar).
+  // Pemain baru tidak melihat suar tanpa memutar kamera ~180°. Hadapkan
+  // kamera ke beacon setiap kali misi dimulai dari awal / pemain respawn.
+  // Hanya bila ada misi aktif + beacon terlihat (free roam: tidak diapa-apakan).
+  _faceObjective() {
+    const b = this.world.beacon;
+    if (!b || !b.visible || !this.missions.active) return;
+    const p = this.player;
+    this.camYaw = Math.atan2(b.position.x - p.x, b.position.z - p.z) - p.heading;
+    this._snapCamera();
   }
 
   _onResize() {
@@ -900,7 +918,7 @@ class Game {
     this._syncPlayerMesh();
     this.fleet.sync(this.time, dt);
     this.people.sync();
-    this.world.update(dt, this.time, this.player.x, this.player.z);
+    this.world.update(dt, this.time, this._camPos.x, this._camPos.z);
     this.renderer.render(this.scene, this.camera);
   }
 

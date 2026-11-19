@@ -177,6 +177,7 @@ export class MissionChain {
     g.respawnAtGarage();
     this._allowBack = true;
     this.startMission(this.index);
+    g._faceObjective(); // RONDE 3: restart menghadap objective
     // D5: restart HARUS terlihat — banner besar + kamera sudah dijepret ke
     // garasi oleh respawnAtGarage, jadi pemain langsung tahu ia kembali ke awal.
     g.banner('JOB RESTARTED', `${this.def.title} — back at the garage`);

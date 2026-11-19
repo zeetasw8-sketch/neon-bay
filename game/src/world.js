@@ -380,10 +380,15 @@ export class World {
     // MENEMBUS gedung — suar penunjuk objective memang harus terlihat dari
     // mana saja, seperti quest marker. Fade saat mendekat tetap dipertahankan
     // supaya tidak menutupi adegan di sekitar target.
+    // RONDE 3: blending ADITIF ternyata memucatkan warna — diukur di Pages
+    // live, puncak kolom = RGB (255,255,200), nyaris putih, BUKAN emas.
+    // Additive menambahkan warna emas ke langit senja yang terang sehingga
+    // jenuh ke putih ("krem pucat"). Sekarang blending NORMAL + warna emas
+    // pekat 0xffb300: kolom tampil sebagai emas solid apa pun latarnya.
     const geo = new THREE.CylinderGeometry(7, 9, 260, 12, 1, true);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffd76a, transparent: true, opacity: 0.6, fog: false,
-      blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+      color: 0xffb300, transparent: true, opacity: 0.85, fog: false,
+      blending: THREE.NormalBlending, side: THREE.DoubleSide, depthWrite: false,
       depthTest: false,
     });
     this.beacon = new THREE.Mesh(geo, mat);
@@ -429,13 +434,19 @@ export class World {
 
   update(dt, t, px, pz) {
     if (this.beacon && this.beacon.visible) {
-      // Suar memudar saat pemain mendekat: dari jauh tetap terang (mudah
-      // ditemukan), dari dekat nyaris transparan supaya tidak menutupi
-      // pemandangan/pemusuh di sekitar target (shot 2 dulu tertutup suar).
+      // Suar memudar saat KAMERA mendekat (px/pz = posisi kamera, dioper
+      // dari _render). RONDE 3: fade lama memakai jarak PEMAIN + lantai
+      // 0,18 — saat pemain berdiri 8 m dari beacon, kameranya bisa berada
+      // DI DALAM kolom (jarak 2,6 m dari sumbu, radius kolom 7–9 m) dan
+      // dinding emas solid menutupi SELURUH layar (shot 2 JOB 5: langit,
+      // laut, dan dermaga semuanya tercuci emas; thugs nyaris tak terlihat).
+      // Sekarang: kamera ≤12 m dari sumbu -> opacity 0 (kolom hilang total,
+      // cincin tanah tetap menandai target), ≥47 m -> penuh. Dari spawn
+      // (~170 m) suar tetap emas pekat dan jelas.
       const d = (px === undefined) ? 999
         : Math.hypot(px - this.beacon.position.x, pz - this.beacon.position.z);
-      const fade = Math.min(1, Math.max(0.18, (d - 8) / 42));
-      this.beacon.material.opacity = (0.45 + 0.15 * Math.sin(t * 3)) * fade;
+      const fade = Math.min(1, Math.max(0, (d - 12) / 35));
+      this.beacon.material.opacity = (0.7 + 0.15 * Math.sin(t * 3)) * fade;
       const s = 1 + 0.08 * Math.sin(t * 3);
       this.beaconRing.scale.set(s, s, 1);
     }
