@@ -1,240 +1,222 @@
-// Neon Bay — pejalan kaki + preman misi 5 (v3, dari nol).
-// Pejalan kaki berjalan di trotoar dan lari menjauh bila mobil pemain melaju
-// kencang ke arah mereka. Preman mengejar pemain dan memukul dari dekat.
+// Neon Bay — orang: pejalan kaki (16) + preman misi 5 (3).
+// Satu mesh per orang (badan+kepala+kaki digabung, warna vertex).
+// Preman mengejar pemain bila < 35 m dan memukul bila < 2 m.
+// Preman mati (HP 0) dihapus dari daftar — misi 5 selesai bila daftar kosong.
+(function () {
+  'use strict';
 
-const THREE = window.THREE;
+  var C = window.NB_CONFIG;
+  var scene = null;
+  var peds = [];
+  var thugs = [];
+  var skinTones = [0xc98a5a, 0x8a5a3a, 0xe0b088, 0x6b4423];
+  var shirtCols = [0x3a6b8a, 0x8a3a3a, 0x3a8a4a, 0x8a7a2a, 0x6b3a8a, 0x2a2a2a, 0x9a9a9a, 0x3a8a8a];
 
-import { WORLD, PEDS } from './config.js';
-
-const MAX_PEDS = 24;
-
-export class People {
-  constructor(scene, world) {
-    this.world = world;
-    this.peds = [];
-    this.thugs = [];
-    this._respawnTimer = 0;
-    const bodyGeo = new THREE.BoxGeometry(0.7, 1.1, 0.45);
-    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    this.bodies = new THREE.InstancedMesh(bodyGeo, bodyMat, MAX_PEDS);
-    this.bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.bodies.castShadow = true;
-    scene.add(this.bodies);
-    const headGeo = new THREE.SphereGeometry(0.26, 10, 8);
-    const headMat = new THREE.MeshLambertMaterial({ color: 0xe8b88a });
-    this.heads = new THREE.InstancedMesh(headGeo, headMat, MAX_PEDS);
-    this.heads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.heads);
-    // Bandana merah preman.
-    const bandGeo = new THREE.BoxGeometry(0.56, 0.14, 0.56);
-    const bandMat = new THREE.MeshBasicMaterial({ color: 0xcc2222 });
-    this.bands = new THREE.InstancedMesh(bandGeo, bandMat, 6);
-    this.bands.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.bands);
-    this._m = new THREE.Matrix4();
-    this._q = new THREE.Quaternion();
-    this._e = new THREE.Euler();
-    this._v = new THREE.Vector3();
-    this._s = new THREE.Vector3(1, 1, 1);
-    this._zero = new THREE.Matrix4().makeScale(0, 0, 0);
-    this._tmpColor = new THREE.Color();
-    this._spawnPeds();
-  }
-
-  _rng(seed) {
-    let s = seed >>> 0;
-    return () => {
-      s = (s * 1664525 + 1013904223) >>> 0;
-      return s / 4294967296;
-    };
-  }
-
-  // Posisi + mesh hidup per orang (alat tes: ped.pos.set / ped.mesh.position).
-  _attachLive(p) {
-    const pos = [p.x, p.z];
-    Object.defineProperties(pos, {
-      0: { get: () => p.x, set: (v) => { p.x = v; }, enumerable: true, configurable: true },
-      1: { get: () => p.z, set: (v) => { p.z = v; }, enumerable: true, configurable: true },
-      x: { get: () => p.x, set: (v) => { p.x = v; }, enumerable: true, configurable: true },
-      y: { get: () => 0, set: () => {}, enumerable: true, configurable: true },
-      z: { get: () => p.z, set: (v) => { p.z = v; }, enumerable: true, configurable: true },
+  function mergeGeoms(list) {
+    var pos = [], norm = [], col = [], idx = [], off = 0;
+    list.forEach(function (g) {
+      var p = g.attributes.position.array;
+      var n = g.attributes.normal.array;
+      var c = g.attributes.color ? g.attributes.color.array : null;
+      var i, k;
+      for (i = 0; i < p.length; i++) { pos.push(p[i]); norm.push(n[i]); }
+      if (c) { for (i = 0; i < c.length; i++) col.push(c[i]); }
+      else { for (k = 0; k < p.length / 3; k++) col.push(1, 1, 1); }
+      var ix = g.index.array;
+      for (i = 0; i < ix.length; i++) idx.push(ix[i] + off);
+      off += p.length / 3;
     });
-    pos.set = (x, y, z) => { p.x = x; p.z = (z !== undefined ? z : (y !== undefined ? y : p.z)); };
-    pos.clone = () => [p.x, p.z];
-    p.pos = pos;
-    p.mesh = new THREE.Object3D();
-    p.mesh.position.set(p.x, 0, p.z);
-    return p;
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    return geo;
   }
 
-  _spawnPeds() {
-    const r = this._rng(31337);
-    const colors = [0x3a6fd2, 0xd2a23a, 0x6a3ad2, 0x2a8a5a, 0xd25a8a, 0x888888, 0x2a2a2a];
-    for (let i = 0; i < PEDS.count; i++) {
-      const vertical = r() < 0.5;
-      const line = WORLD.roadLines[Math.floor(r() * WORLD.roadLines.length)];
-      const off = (r() < 0.5 ? -10.5 : 10.5);
-      const along = -170 + r() * 340;
-      const p = {
-        x: vertical ? line + off : along,
-        z: vertical ? along : line + off,
-        heading: r() * Math.PI * 2,
-        speed: PEDS.walkSpeed * (0.8 + r() * 0.4),
-        color: colors[Math.floor(r() * colors.length)],
-        vertical, line, off,
-        flee: 0, fleeX: 0, fleeZ: 0,
-        alive: true, isThug: false,
-      };
-      this._attachLive(p);
-      this.peds.push(p);
-      this.bodies.setColorAt(this.peds.length - 1, this._tmpColor.setHex(p.color));
+  function coloredBox(w, h, d, color, x, y, z) {
+    var g = new THREE.BoxGeometry(w, h, d);
+    var m = new THREE.Matrix4();
+    m.makeTranslation(x, y, z);
+    g.applyMatrix4(m);
+    var c = new THREE.Color(color);
+    var n = g.attributes.position.count;
+    var arr = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  }
+
+  // Satu orang: kaki + badan + kepala. Depan = +z lokal.
+  function makePersonMesh(shirt, skin, scale) {
+    var parts = [];
+    parts.push(coloredBox(0.52, 0.8, 0.32, 0x22222e, 0, 0.4, 0));       // kaki
+    parts.push(coloredBox(0.62, 0.72, 0.38, shirt, 0, 1.16, 0));          // badan
+    parts.push(coloredBox(0.16, 0.55, 0.16, shirt, -0.4, 1.1, 0));        // lengan kiri
+    parts.push(coloredBox(0.16, 0.55, 0.16, shirt, 0.4, 1.1, 0));         // lengan kanan
+    parts.push(coloredBox(0.36, 0.36, 0.36, skin, 0, 1.72, 0));           // kepala
+    parts.push(coloredBox(0.38, 0.1, 0.38, 0x1a1a1a, 0, 1.92, 0));        // rambut
+    var geo = mergeGeoms(parts);
+    var mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    mesh.castShadow = true;
+    mesh.scale.setScalar(scale || 1);
+    return mesh;
+  }
+
+  function randomWalkPoint() {
+    for (var tries = 0; tries < 12; tries++) {
+      var x = -200 + Math.random() * 400;
+      var z = -200 + Math.random() * 395;
+      if (z > 196) continue;
+      if (window.NBWorld.isBlocked(x, z, 1)) continue;
+      return { x: x, z: z };
     }
-    if (this.bodies.instanceColor) this.bodies.instanceColor.needsUpdate = true;
+    return { x: 0, z: 100 };
   }
 
-  spawnThugs(x, z, count) {
-    this.clearThugs();
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2;
-      const t = {
-        x: x + Math.cos(a) * 6, z: z + Math.sin(a) * 6,
-        heading: 0, speed: 3.4, color: 0x1a1a1a,
-        hp: 3, alive: true, isThug: true,
-        punchTimer: 0, knockX: 0, knockZ: 0,
-      };
-      this._attachLive(t);
-      this.thugs.push(t);
+  function spawnPeds() {
+    for (var i = 0; i < C.pedCount; i++) {
+      var mesh = makePersonMesh(
+        shirtCols[i % shirtCols.length],
+        skinTones[i % skinTones.length],
+        0.95 + Math.random() * 0.1
+      );
+      var p = randomWalkPoint();
+      mesh.position.set(p.x, 0, p.z);
+      mesh.rotation.y = Math.random() * Math.PI * 2;
+      scene.add(mesh);
+      peds.push({
+        mesh: mesh,
+        speed: 1.2 + Math.random() * 0.7,
+        target: randomWalkPoint(),
+        heading: mesh.rotation.y,
+      });
     }
   }
 
-  clearThugs() {
-    this.thugs = [];
-  }
-
-  thugsAlive() {
-    return this.thugs.filter((t) => t.alive).length;
-  }
-
-  // Pejalan kaki terdekat dari titik (untuk tembakan/pukulan).
-  nearestPed(x, z, d) {
-    let best = null, bd = d;
-    for (const p of this.peds) {
-      if (!p.alive) continue;
-      const dd = Math.hypot(p.x - x, p.z - z);
-      if (dd < bd) { bd = dd; best = p; }
-    }
-    return best;
-  }
-
-  update(dt, player) {
-    // Pejalan kaki yang tumbang muncul lagi perlahan supaya kota tidak kosong.
-    this._respawnTimer -= dt;
-    if (this._respawnTimer <= 0) {
-      this._respawnTimer = 15;
-      const dead = this.peds.find((p) => !p.alive);
-      if (dead) {
-        const vertical = Math.random() < 0.5;
-        const line = WORLD.roadLines[Math.floor(Math.random() * WORLD.roadLines.length)];
-        const off = (Math.random() < 0.5 ? -10.5 : 10.5);
-        const along = -170 + Math.random() * 340;
-        dead.x = vertical ? line + off : along;
-        dead.z = vertical ? along : line + off;
-        dead.heading = Math.random() * Math.PI * 2;
-        dead.flee = 0;
-        dead.alive = true;
+  function updatePeds(dt) {
+    peds.forEach(function (p) {
+      var dx = p.target.x - p.mesh.position.x;
+      var dz = p.target.z - p.mesh.position.z;
+      var d = Math.hypot(dx, dz);
+      if (d < 1.5) { p.target = randomWalkPoint(); return; }
+      var vx = (dx / d) * p.speed * dt;
+      var vz = (dz / d) * p.speed * dt;
+      var moved = window.NBWorld.slideMove(p.mesh.position.x, p.mesh.position.z, vx, vz, 0.5);
+      if (Math.hypot(moved.x - p.mesh.position.x, moved.z - p.mesh.position.z) < 0.01) {
+        p.target = randomWalkPoint();
+        return;
       }
+      p.mesh.position.x = moved.x;
+      p.mesh.position.z = moved.z;
+      p.heading = Math.atan2(dx, dz);
+      p.mesh.rotation.y = p.heading;
+      // Ayun langkah (goyang kecil supaya terlihat berjalan).
+      p.mesh.position.y = Math.abs(Math.sin(performance.now() * 0.006 + p.speed)) * 0.05;
+    });
+  }
+
+  function spawnThugs(x, z) {
+    clearThugs();
+    var spots = [[-4, -3], [4, -4], [0, 5]];
+    for (var i = 0; i < C.thugCount; i++) {
+      var mesh = makePersonMesh(0x8a1a1a, skinTones[i % skinTones.length], 1.12);
+      mesh.position.set(x + spots[i][0], 0, z + spots[i][1]);
+      mesh.rotation.y = Math.PI;
+      scene.add(mesh);
+      thugs.push({
+        hp: C.thugHp,
+        mesh: mesh,
+        speed: C.thugSpeed,
+        attackCd: 0,
+        heading: Math.PI,
+      });
     }
-    // Pejalan kaki: jalan di trotoar; lari bila mobil pemain melaju ke arahnya.
-    for (const p of this.peds) {
-      if (!p.alive) continue;
-      const dx = player.x - p.x, dz = player.z - p.z;
-      const dist = Math.hypot(dx, dz);
-      if (player.inCar && player.speed > 8 && dist < PEDS.fleeRadius) {
-        p.flee = 1.2;
-        p.fleeX = -dx / Math.max(dist, 0.01);
-        p.fleeZ = -dz / Math.max(dist, 0.01);
-      }
-      if (p.flee > 0) {
-        p.flee -= dt;
-        p.heading = Math.atan2(p.fleeX, p.fleeZ);
-        p.x += p.fleeX * PEDS.fleeSpeed * dt;
-        p.z += p.fleeZ * PEDS.fleeSpeed * dt;
-      } else {
-        // Jalan lurus di trotoar; di ujung jalan, balik arah.
-        const fx = Math.sin(p.heading), fz = Math.cos(p.heading);
-        p.x += fx * p.speed * dt;
-        p.z += fz * p.speed * dt;
-        if (p.vertical) {
-          if (p.z > 178 || p.z < -178) p.heading += Math.PI;
-        } else if (p.x > 178 || p.x < -178) {
-          p.heading += Math.PI;
+  }
+
+  function clearThugs() {
+    thugs.forEach(function (t) { scene.remove(t.mesh); });
+    thugs.length = 0;
+  }
+
+  function updateThugs(dt, game) {
+    // Jaga jarak antar preman (jangan menumpuk di satu titik).
+    for (var a = 0; a < thugs.length; a++) {
+      for (var b = a + 1; b < thugs.length; b++) {
+        var ta = thugs[a], tb = thugs[b];
+        var sx = tb.mesh.position.x - ta.mesh.position.x;
+        var sz = tb.mesh.position.z - ta.mesh.position.z;
+        var sd = Math.hypot(sx, sz);
+        if (sd > 0.01 && sd < 1.8) {
+          var push = (1.8 - sd) / 2;
+          var ux = sx / sd, uz = sz / sd;
+          var ma = window.NBWorld.slideMove(ta.mesh.position.x, ta.mesh.position.z, -ux * push, -uz * push, 0.5);
+          var mb = window.NBWorld.slideMove(tb.mesh.position.x, tb.mesh.position.z, ux * push, uz * push, 0.5);
+          ta.mesh.position.x = ma.x; ta.mesh.position.z = ma.z;
+          tb.mesh.position.x = mb.x; tb.mesh.position.z = mb.z;
         }
       }
-      // D2: pejalan kaki tidak boleh masuk laut.
-      p.z = this.world.clampShore(p.x, p.z);
-      const fixed = this.world.resolveCollision(p.x, p.z, 0.5);
-      p.x = fixed.x; p.z = fixed.z;
     }
-    // Preman: kejar pemain, pukul bila dekat.
-    for (const t of this.thugs) {
-      if (!t.alive) continue;
-      t.punchTimer -= dt;
-      const dx = player.x - t.x, dz = player.z - t.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist > 1.6) {
+    for (var i = thugs.length - 1; i >= 0; i--) {
+      var t = thugs[i];
+      if (t.hp <= 0) continue;
+      t.attackCd = Math.max(0, t.attackCd - dt);
+      var dx = game.playerPos.x - t.mesh.position.x;
+      var dz = game.playerPos.z - t.mesh.position.z;
+      var d = Math.hypot(dx, dz);
+      if (d < C.thugChaseDist && !game.inCar) {
+        // Kejar pemain tapi berhenti 2 m darinya (mengepung, bukan menumpuk).
+        if (d > 2.0) {
+          var vx = (dx / d) * t.speed * dt;
+          var vz = (dz / d) * t.speed * dt;
+          var moved = window.NBWorld.slideMove(t.mesh.position.x, t.mesh.position.z, vx, vz, 0.5);
+          t.mesh.position.x = moved.x;
+          t.mesh.position.z = moved.z;
+        }
         t.heading = Math.atan2(dx, dz);
-        t.x += Math.sin(t.heading) * t.speed * dt;
-        t.z += Math.cos(t.heading) * t.speed * dt;
-      } else if (t.punchTimer <= 0) {
-        t.punchTimer = 0.9;
-        player.hurt(8, 'thug');
+        t.mesh.rotation.y = t.heading;
+        if (d < 2.4 && t.attackCd <= 0 && game.state === 'playing') {
+          t.attackCd = 1.0;
+          game.damagePlayer(C.thugDamage, 'thug');
+        }
+      } else if (d < C.thugChaseDist && game.inCar) {
+        // Pemain di mobil: preman berdiri, menghadap mobil.
+        t.heading = Math.atan2(dx, dz);
+        t.mesh.rotation.y = t.heading;
       }
-      // Knockback meluruh.
-      t.x += t.knockX * dt;
-      t.z += t.knockZ * dt;
-      t.knockX *= Math.max(0, 1 - dt * 6);
-      t.knockZ *= Math.max(0, 1 - dt * 6);
-      // D2: preman tidak boleh masuk laut (mengejar pemain sampai dermaga).
-      t.z = this.world.clampShore(t.x, t.z);
-      const fixed = this.world.resolveCollision(t.x, t.z, 0.6);
-      t.x = fixed.x; t.z = fixed.z;
     }
   }
 
-  sync() {
-    const all = [...this.peds, ...this.thugs];
-    for (let i = 0; i < all.length && i < MAX_PEDS; i++) {
-      const p = all[i];
-      const vis = p.alive ? 1 : 0;
-      p.mesh.position.set(p.x, 0, p.z);
-      p.mesh.rotation.y = p.heading;
-      this._e.set(0, p.heading, 0);
-      this._q.setFromEuler(this._e);
-      this._v.set(p.x, 0.75, p.z);
-      this._m.compose(this._v, this._q, this._s);
-      this.bodies.setMatrixAt(i, vis ? this._m : this._zero);
-      this._v.set(p.x, 1.55, p.z);
-      this._m.compose(this._v, this._q, this._s);
-      this.heads.setMatrixAt(i, vis ? this._m : this._zero);
+  // Preman kena damage; mati -> hapus dari daftar (misi 5 selesai saat kosong).
+  function damageThug(t, amount, fromX, fromZ) {
+    t.hp -= amount;
+    // Knockback menjauhi penyerang.
+    var dx = t.mesh.position.x - fromX;
+    var dz = t.mesh.position.z - fromZ;
+    var d = Math.hypot(dx, dz) || 1;
+    var moved = window.NBWorld.slideMove(t.mesh.position.x, t.mesh.position.z, (dx / d) * 0.9, (dz / d) * 0.9, 0.5);
+    t.mesh.position.x = moved.x;
+    t.mesh.position.z = moved.z;
+    if (t.hp <= 0) {
+      var idx = thugs.indexOf(t);
+      if (idx >= 0) thugs.splice(idx, 1);
+      scene.remove(t.mesh);
+      return true;
     }
-    for (let i = all.length; i < MAX_PEDS; i++) {
-      this.bodies.setMatrixAt(i, this._zero);
-      this.heads.setMatrixAt(i, this._zero);
-    }
-    this.bodies.instanceMatrix.needsUpdate = true;
-    this.heads.instanceMatrix.needsUpdate = true;
-    // Bandana hanya untuk preman hidup.
-    let bi = 0;
-    for (const t of this.thugs) {
-      if (!t.alive || bi >= 6) continue;
-      this._e.set(0, t.heading, 0);
-      this._q.setFromEuler(this._e);
-      this._v.set(t.x, 1.62, t.z);
-      this._m.compose(this._v, this._q, this._s);
-      this.bands.setMatrixAt(bi, this._m);
-      bi++;
-    }
-    for (; bi < 6; bi++) this.bands.setMatrixAt(bi, this._zero);
-    this.bands.instanceMatrix.needsUpdate = true;
+    return false;
   }
-}
+
+  window.NBPeople = {
+    peds: peds,
+    thugs: thugs,
+    makePersonMesh: makePersonMesh,
+    init: function (sc) { scene = sc; spawnPeds(); },
+    spawnThugs: spawnThugs,
+    clearThugs: clearThugs,
+    damageThug: damageThug,
+    update: function (dt, game) {
+      updatePeds(dt);
+      updateThugs(dt, game);
+    },
+  };
+})();

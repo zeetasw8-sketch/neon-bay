@@ -1,450 +1,304 @@
-// Neon Bay — kendaraan: rendering InstancedMesh + AI lalu lintas (v3, dari nol).
-// Semua mobil (lalu lintas, parkir, pemain, polisi) digambar lewat segelintir
-// InstancedMesh: bodi, kaca, bumper, roda, lampu depan/belakang, bilah polisi.
-// Lalu lintas mengikuti graf simpul jalan (persimpangan), melambat bila mobil
-// pemain tepat di depan.
+// Neon Bay — kendaraan: lalu lintas, mobil parkir, mobil pemain.
+// Satu mesh per mobil (bodi+kabin+roda digabung, warna vertex).
+// Lalu lintas mengikuti jalurnya (x = lane.line untuk jalan vertikal);
+// mobil yang "dipegang" (speed 0 + targetSpeed 0) tetap diam — dipakai
+// alat screenshot untuk menata adegan.
+(function () {
+  'use strict';
 
-const THREE = window.THREE;
+  var C = window.NB_CONFIG;
+  var scene = null;
+  var cars = [];      // lalu lintas (kind 'traffic')
+  var parked = [];    // mobil parkir (kind 'parked')
+  var playerCar = null;
 
-import { WORLD, TRAFFIC, STARTER_CAR } from './config.js';
-
-const MAX_CARS = 40;
-const WHEELS_PER_CAR = 4;
-
-function mergeBoxes(boxes) {
-  // boxes: [{cx,cy,cz,sx,sy,sz}] -> BufferGeometry gabungan (tanpa warna/uv).
-  const pos = [], nor = [], idx = [];
-  let v = 0;
-  for (const b of boxes) {
-    const x0 = b.cx - b.sx / 2, x1 = b.cx + b.sx / 2;
-    const y0 = b.cy - b.sy / 2, y1 = b.cy + b.sy / 2;
-    const z0 = b.cz - b.sz / 2, z1 = b.cz + b.sz / 2;
-    const faces = [
-      { v: [[x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0]], n: [1, 0, 0] },
-      { v: [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]], n: [-1, 0, 0] },
-      { v: [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], n: [0, 1, 0] },
-      { v: [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], n: [0, -1, 0] },
-      { v: [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], n: [0, 0, 1] },
-      { v: [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], n: [0, 0, -1] },
-    ];
-    for (const f of faces) {
-      for (const p of f.v) { pos.push(p[0], p[1], p[2]); nor.push(f.n[0], f.n[1], f.n[2]); }
-      idx.push(v, v + 1, v + 2, v, v + 2, v + 3);
-      v += 4;
-    }
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  geo.setIndex(idx);
-  return geo;
-}
-
-// Satu mobil = satu record; fleet menulis matriks instance tiap frame.
-export class VehicleFleet {
-  constructor(scene) {
-    this.scene = scene;
-    this.cars = [];
-    const bodyGeo = new THREE.BoxGeometry(2.0, 0.9, 4.4);
-    const bodyMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    this.body = new THREE.InstancedMesh(bodyGeo, bodyMat, MAX_CARS);
-    this.body.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.body.castShadow = true;
-    scene.add(this.body);
-
-    const glassGeo = new THREE.BoxGeometry(1.7, 0.65, 2.1);
-    const glassMat = new THREE.MeshLambertMaterial({ color: 0x9fd8ff });
-    this.glass = new THREE.InstancedMesh(glassGeo, glassMat, MAX_CARS);
-    this.glass.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.glass);
-
-    // Atap sewarna bodi (di atas kaca).
-    const roofGeo = new THREE.BoxGeometry(1.6, 0.14, 1.9);
-    const roofMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-    this.roof = new THREE.InstancedMesh(roofGeo, roofMat, MAX_CARS);
-    this.roof.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.roof);
-
-    const bumperGeo = mergeBoxes([
-      { cx: 0, cy: 0.32, cz: 2.22, sx: 2.0, sy: 0.28, sz: 0.18 },
-      { cx: 0, cy: 0.32, cz: -2.22, sx: 2.0, sy: 0.28, sz: 0.18 },
-    ]);
-    const bumperMat = new THREE.MeshLambertMaterial({ color: 0x2a2a2e });
-    this.bumper = new THREE.InstancedMesh(bumperGeo, bumperMat, MAX_CARS);
-    this.bumper.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.bumper);
-
-    const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.32, 10);
-    wheelGeo.rotateZ(Math.PI / 2);
-    const wheelMat = new THREE.MeshLambertMaterial({ color: 0x141416 });
-    this.wheels = new THREE.InstancedMesh(wheelGeo, wheelMat, MAX_CARS * WHEELS_PER_CAR);
-    this.wheels.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    this.wheels.castShadow = true;
-    scene.add(this.wheels);
-
-    const hubGeo = new THREE.CylinderGeometry(0.2, 0.2, 0.34, 8);
-    hubGeo.rotateZ(Math.PI / 2);
-    const hubMat = new THREE.MeshBasicMaterial({ color: 0xdddddd });
-    this.hubs = new THREE.InstancedMesh(hubGeo, hubMat, MAX_CARS * WHEELS_PER_CAR);
-    this.hubs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.hubs);
-
-    const frontGeo = mergeBoxes([
-      { cx: -0.62, cy: 0.78, cz: 2.24, sx: 0.5, sy: 0.22, sz: 0.1 },
-      { cx: 0.62, cy: 0.78, cz: 2.24, sx: 0.5, sy: 0.22, sz: 0.1 },
-    ]);
-    const frontMat = new THREE.MeshBasicMaterial({ color: 0xfff2b0 });
-    this.frontLights = new THREE.InstancedMesh(frontGeo, frontMat, MAX_CARS);
-    this.frontLights.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.frontLights);
-
-    const rearGeo = mergeBoxes([
-      { cx: -0.62, cy: 0.78, cz: -2.24, sx: 0.5, sy: 0.22, sz: 0.1 },
-      { cx: 0.62, cy: 0.78, cz: -2.24, sx: 0.5, sy: 0.22, sz: 0.1 },
-    ]);
-    const rearMat = new THREE.MeshBasicMaterial({ color: 0xff2222 });
-    this.rearLights = new THREE.InstancedMesh(rearGeo, rearMat, MAX_CARS);
-    this.rearLights.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.rearLights);
-
-    const barGeo = new THREE.BoxGeometry(1.3, 0.28, 0.55);
-    const barMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    this.lightBar = new THREE.InstancedMesh(barGeo, barMat, MAX_CARS);
-    this.lightBar.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(this.lightBar);
-
-    this._m = new THREE.Matrix4();
-    this._m2 = new THREE.Matrix4();
-    this._q = new THREE.Quaternion();
-    this._e = new THREE.Euler();
-    this._v = new THREE.Vector3();
-    this._s = new THREE.Vector3(1, 1, 1);
-    this._zero = new THREE.Matrix4().makeScale(0, 0, 0);
-    this._red = new THREE.Color(0xff2222);
-    this._blue = new THREE.Color(0x2266ff);
-    this._tmpColor = new THREE.Color();
-  }
-
-  add(rec) {
-    if (this.cars.length >= MAX_CARS) return null;
-    rec.fleetIndex = this.cars.length;
-    rec.wheelSpin = 0;
-    // Flag jenis untuk pemanggil (herd shot, alat tes): kind tetap sumber utama.
-    rec.traffic = rec.kind === 'traffic';
-    rec.parkedCar = rec.kind === 'parked';
-    rec.policeCar = rec.kind === 'police';
-    // Objek 3D pendamping (bukan dirender): alat tes membaca car.mesh.position.
-    rec.mesh = new THREE.Object3D();
-    rec.mesh.position.set(rec.x, 0.62, rec.z);
-    rec._meshX = rec.x; rec._meshZ = rec.z;
-    // Posisi hidup: car.pos[0]/[1] = x/z; car.pos.set(x, y, z) memindahkan mobil.
-    const r = rec;
-    const pos = [r.x, r.z];
-    Object.defineProperties(pos, {
-      0: { get: () => r.x, set: (v) => { r.x = v; }, enumerable: true, configurable: true },
-      1: { get: () => r.z, set: (v) => { r.z = v; }, enumerable: true, configurable: true },
-      x: { get: () => r.x, set: (v) => { r.x = v; }, enumerable: true, configurable: true },
-      y: { get: () => 0.62, set: () => {}, enumerable: true, configurable: true },
-      z: { get: () => r.z, set: (v) => { r.z = v; }, enumerable: true, configurable: true },
+  function mergeGeoms(list) {
+    var pos = [], norm = [], col = [], idx = [], off = 0;
+    list.forEach(function (g) {
+      var p = g.attributes.position.array;
+      var n = g.attributes.normal.array;
+      var c = g.attributes.color ? g.attributes.color.array : null;
+      var i, k;
+      for (i = 0; i < p.length; i++) { pos.push(p[i]); norm.push(n[i]); }
+      if (c) { for (i = 0; i < c.length; i++) col.push(c[i]); }
+      else { for (k = 0; k < p.length / 3; k++) col.push(1, 1, 1); }
+      var ix = g.index.array;
+      for (i = 0; i < ix.length; i++) idx.push(ix[i] + off);
+      off += p.length / 3;
     });
-    pos.set = (x, y, z) => { r.x = x; r.z = (z !== undefined ? z : (y !== undefined ? y : r.z)); };
-    pos.clone = () => [r.x, r.z];
-    rec.pos = pos;
-    this.cars.push(rec);
-    this.body.setColorAt(rec.fleetIndex, this._tmpColor.setHex(rec.color));
-    this.roof.setColorAt(rec.fleetIndex, this._tmpColor.setHex(rec.color));
-    if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true;
-    if (this.roof.instanceColor) this.roof.instanceColor.needsUpdate = true;
-    return rec;
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    return geo;
   }
 
-  remove(rec) {
-    const i = this.cars.indexOf(rec);
-    if (i < 0) return;
-    const last = this.cars.pop();
-    if (i < this.cars.length) {
-      this.cars[i] = last;
-      last.fleetIndex = i;
-      this.body.setColorAt(i, this._tmpColor.setHex(last.color));
-      this.roof.setColorAt(i, this._tmpColor.setHex(last.color));
-      if (this.body.instanceColor) this.body.instanceColor.needsUpdate = true;
-      if (this.roof.instanceColor) this.roof.instanceColor.needsUpdate = true;
+  function coloredBox(w, h, d, color, x, y, z) {
+    var g = new THREE.BoxGeometry(w, h, d);
+    var m = new THREE.Matrix4();
+    m.makeTranslation(x, y, z);
+    g.applyMatrix4(m);
+    var c = new THREE.Color(color);
+    var n = g.attributes.position.count;
+    var arr = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  }
+
+  function coloredCyl(rt, rb, h, color, x, y, z, seg) {
+    var g = new THREE.CylinderGeometry(rt, rb, h, seg || 8);
+    var m = new THREE.Matrix4();
+    m.makeTranslation(x, y, z);
+    // Roda: sumbu silinder diputar ke sumbu X.
+    var rot = new THREE.Matrix4();
+    rot.makeRotationZ(Math.PI / 2);
+    g.applyMatrix4(rot);
+    g.applyMatrix4(m);
+    var c = new THREE.Color(color);
+    var n = g.attributes.position.count;
+    var arr = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  }
+
+  // Satu mesh mobil: bodi + kabin + 4 roda + lampu. Depan = +z lokal,
+  // jadi mesh.rotation.y = heading menghadap (sin h, cos h).
+  function makeCarMesh(color, opts) {
+    opts = opts || {};
+    var parts = [];
+    var body = opts.police ? 0x1a1a22 : color;
+    parts.push(coloredBox(2.0, 0.62, 4.3, body, 0, 0.62, 0));
+    parts.push(coloredBox(1.75, 0.55, 2.1, opts.police ? 0x2e2e3a : 0x22222e, 0, 1.18, -0.25));
+    // Kaca depan/belakang (gelap mengkilap).
+    parts.push(coloredBox(1.6, 0.4, 0.12, 0x8fb8d8, 0, 1.15, 0.82));
+    // Roda.
+    [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]].forEach(function (p) {
+      parts.push(coloredCyl(0.36, 0.36, 0.28, 0x111114, p[0], 0.36, p[1], 10));
+    });
+    // Lampu depan.
+    parts.push(coloredBox(0.4, 0.16, 0.1, 0xfff2b0, -0.6, 0.7, 2.16));
+    parts.push(coloredBox(0.4, 0.16, 0.1, 0xfff2b0, 0.6, 0.7, 2.16));
+    // Lampu belakang.
+    parts.push(coloredBox(0.4, 0.16, 0.1, 0xff3b3b, -0.6, 0.7, -2.16));
+    parts.push(coloredBox(0.4, 0.16, 0.1, 0xff3b3b, 0.6, 0.7, -2.16));
+    if (opts.police) {
+      // Batang lampu polisi di atap + garis putih di bodi.
+      parts.push(coloredBox(1.1, 0.16, 0.5, 0xff3b3b, -0.45, 1.52, -0.25));
+      parts.push(coloredBox(1.1, 0.16, 0.5, 0x3b7bff, 0.45, 1.52, -0.25));
+      parts.push(coloredBox(2.02, 0.3, 4.32, 0xd8d8e0, 0, 0.62, 0));
     }
-    rec.fleetIndex = -1;
+    var geo = mergeGeoms(parts);
+    var mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+    mesh.castShadow = true;
+    return mesh;
   }
 
-  _carMatrix(rec, yOff, out) {
-    this._e.set(0, rec.heading, 0);
-    this._q.setFromEuler(this._e);
-    this._v.set(rec.x, yOff, rec.z);
-    out.compose(this._v, this._q, this._s);
-    return out;
-  }
-
-  sync(time, dt = 0.016) {
-    const n = this.cars.length;
-    for (let i = 0; i < n; i++) {
-      const c = this.cars[i];
-      // Bila ada yang menggeser mesh dari luar (alat tes teleport), ikuti posisinya.
-      if (c.mesh.position.x !== c._meshX || c.mesh.position.z !== c._meshZ) {
-        c.x = c.mesh.position.x; c.z = c.mesh.position.z;
-      }
-      c.mesh.position.set(c.x, 0.62, c.z);
-      c._meshX = c.x; c._meshZ = c.z;
-      c.mesh.rotation.y = c.heading;
-      this._carMatrix(c, 0.62, this._m);
-      this.body.setMatrixAt(i, this._m);
-      this._carMatrix(c, 1.38, this._m);
-      // Kaca agak ke belakang (z lokal -0.25): geser sebelum rotasi.
-      this._m2.makeTranslation(0, 0, -0.25);
-      this._m.multiply(this._m2);
-      this.glass.setMatrixAt(i, this._m);
-      this._carMatrix(c, 1.76, this._m);
-      this._m2.makeTranslation(0, 0, -0.2);
-      this._m.multiply(this._m2);
-      this.roof.setMatrixAt(i, this._m);
-      this._carMatrix(c, 0, this._m);
-      this.bumper.setMatrixAt(i, this._m);
-      this._carMatrix(c, 0, this._m);
-      this.frontLights.setMatrixAt(i, this._m);
-      this._carMatrix(c, 0, this._m);
-      this.rearLights.setMatrixAt(i, this._m);
-      if (c.lightBar) {
-        this._carMatrix(c, 1.86, this._m);
-        this.lightBar.setMatrixAt(i, this._m);
-        const phase = Math.floor(time * 6 + i) % 2 === 0;
-        this.lightBar.setColorAt(i, phase ? this._red : this._blue);
-      } else {
-        this.lightBar.setMatrixAt(i, this._zero);
-      }
-      // Roda: posisi sudut + putaran sesuai kecepatan.
-      c.wheelSpin += (c.speed / 0.42) * dt;
-      const offs = [[-0.95, 1.45], [0.95, 1.45], [-0.95, -1.45], [0.95, -1.45]];
-      for (let w = 0; w < 4; w++) {
-        const ox = offs[w][0], oz = offs[w][1];
-        const cs = Math.cos(c.heading), sn = Math.sin(c.heading);
-        const wx = c.x + ox * cs + oz * sn;
-        const wz = c.z - ox * sn + oz * cs;
-        this._e.set(c.wheelSpin, c.heading, 0);
-        this._q.setFromEuler(this._e);
-        this._v.set(wx, 0.42, wz);
-        this._m.compose(this._v, this._q, this._s);
-        const wi = i * WHEELS_PER_CAR + w;
-        this.wheels.setMatrixAt(wi, this._m);
-        this.hubs.setMatrixAt(wi, this._m);
-      }
-    }
-    // Sembunyikan slot yang tidak terpakai.
-    for (let i = n; i < MAX_CARS; i++) {
-      this.body.setMatrixAt(i, this._zero);
-      this.glass.setMatrixAt(i, this._zero);
-      this.roof.setMatrixAt(i, this._zero);
-      this.bumper.setMatrixAt(i, this._zero);
-      this.frontLights.setMatrixAt(i, this._zero);
-      this.rearLights.setMatrixAt(i, this._zero);
-      this.lightBar.setMatrixAt(i, this._zero);
-      for (let w = 0; w < 4; w++) {
-        this.wheels.setMatrixAt(i * WHEELS_PER_CAR + w, this._zero);
-        this.hubs.setMatrixAt(i * WHEELS_PER_CAR + w, this._zero);
-      }
-    }
-    this.body.instanceMatrix.needsUpdate = true;
-    this.glass.instanceMatrix.needsUpdate = true;
-    this.roof.instanceMatrix.needsUpdate = true;
-    this.bumper.instanceMatrix.needsUpdate = true;
-    this.wheels.instanceMatrix.needsUpdate = true;
-    this.hubs.instanceMatrix.needsUpdate = true;
-    this.frontLights.instanceMatrix.needsUpdate = true;
-    this.rearLights.instanceMatrix.needsUpdate = true;
-    this.lightBar.instanceMatrix.needsUpdate = true;
-    if (this.lightBar.instanceColor) this.lightBar.instanceColor.needsUpdate = true;
-  }
-}
-
-// Lalu lintas + mobil parkir.
-export class Traffic {
-  constructor(fleet, world) {
-    this.fleet = fleet;
-    this.world = world;
-    this.cars = [];       // mobil lalu lintas yang bergerak
-    this.parked = [];     // mobil parkir (bisa dicuri)
-    this.playerCar = null; // mobil yang sedang dikendarai pemain
-    this._spawnParked();
-    this._spawnTraffic();
-  }
-
-  _rng(seed) {
-    let s = seed >>> 0;
-    return () => {
-      s = (s * 1664525 + 1013904223) >>> 0;
-      return s / 4294967296;
+  function makeCar(kind, x, z, heading, color, opts) {
+    var mesh = makeCarMesh(color, opts);
+    mesh.position.set(x, 0, z);
+    mesh.rotation.y = heading;
+    scene.add(mesh);
+    return {
+      kind: kind,
+      mesh: mesh,
+      heading: heading,
+      speed: 0,
+      targetSpeed: 0,
+      cruise: 0,
+      lane: null,
+      starter: false,
     };
   }
 
-  _spawnParked() {
-    const r = this._rng(4242);
-    const colors = [0xdddddd, 0x2a6fd2, 0xd22a2a, 0x2ad27a, 0xe8c25a, 0x888888, 0xff8c42, 0x7a4fd2];
-    // Mobil starter milik pemain di dekat garasi.
-    const starter = this.fleet.add({
-      kind: 'parked', x: STARTER_CAR.x, z: STARTER_CAR.z, heading: STARTER_CAR.heading,
-      speed: 0, targetSpeed: 0, color: STARTER_CAR.color, owned: STARTER_CAR.owned,
+  function randomLaneCar(i) {
+    var vertical = i % 2 === 0;
+    var line, dir;
+    if (vertical) {
+      line = C.verticalRoads[Math.floor(Math.random() * C.verticalRoads.length)];
+      dir = Math.random() < 0.5 ? 1 : -1;
+    } else {
+      line = C.horizontalRoads[Math.floor(Math.random() * C.horizontalRoads.length)];
+      dir = Math.random() < 0.5 ? 1 : -1;
+    }
+    var colors = [0x8a2f2f, 0x2f5a8a, 0x3a7a3a, 0x8a8a2f, 0x5a3a8a, 0x9a9a9a, 0x2f8a7a];
+    var car = makeCar('traffic', 0, 0, 0, colors[i % colors.length], null);
+    car.lane = { vertical: vertical, line: line, dir: dir };
+    car.cruise = 9 + Math.random() * 5;
+    car.speed = car.cruise;
+    car.targetSpeed = car.cruise;
+    if (vertical) {
+      car.mesh.position.set(line, 0, -200 + Math.random() * 400);
+      car.heading = dir > 0 ? 0 : Math.PI;
+    } else {
+      car.mesh.position.set(-200 + Math.random() * 400, 0, line);
+      car.heading = dir > 0 ? Math.PI / 2 : -Math.PI / 2;
+    }
+    car.mesh.rotation.y = car.heading;
+    return car;
+  }
+
+  function spawnParked() {
+    var spots = [
+      { x: C.starterCar.x, z: C.starterCar.z, h: 0, starter: true, color: 0xff5a9a },
+      { x: -30, z: 130, h: Math.PI / 2, color: 0x3a6b8a },
+      { x: 30, z: 150, h: -Math.PI / 2, color: 0x6b3a2a },
+      { x: -78, z: 40, h: 0, color: 0x2a5a3a },
+      { x: 78, z: -40, h: Math.PI, color: 0x8a8a8a },
+      { x: -35, z: -120, h: Math.PI / 2, color: 0x4a2a6b },
+      { x: 35, z: -90, h: 0, color: 0x2a2a5a },
+      { x: 160, z: 100, h: Math.PI, color: 0x7a6a2a },
+    ];
+    spots.forEach(function (s) {
+      var car = makeCar('parked', s.x, s.z, s.h, s.color, null);
+      car.starter = !!s.starter;
+      parked.push(car);
     });
-    this.parked.push(starter);
-    // Mobil parkir lain di tepi jalan.
-    const spots = [];
-    for (const line of WORLD.roadLines) {
-      for (const t of [-140, -70, 0, 70, 140]) {
-        spots.push({ x: line + 10.5, z: t + (r() - 0.5) * 20, heading: 0 });
-        spots.push({ x: t + (r() - 0.5) * 20, z: line + 10.5, heading: Math.PI / 2 });
-      }
-    }
-    for (let i = 0; i < 14; i++) {
-      const s = spots[Math.floor(r() * spots.length)];
-      const rec = this.fleet.add({
-        kind: 'parked', x: s.x, z: s.z, heading: s.heading,
-        speed: 0, targetSpeed: 0, color: colors[Math.floor(r() * colors.length)], owned: false,
-      });
-      this.parked.push(rec);
-    }
   }
 
-  _spawnTraffic() {
-    const r = this._rng(777);
-    const colors = [0xdddddd, 0x2a6fd2, 0xd22a2a, 0x2ad27a, 0xe8c25a, 0x888888, 0xff8c42];
-    const lines = WORLD.roadLines;
-    for (let i = 0; i < TRAFFIC.count; i++) {
-      const vertical = r() < 0.5;
-      const line = lines[Math.floor(r() * lines.length)];
-      const along = -170 + r() * 340;
-      const x = vertical ? line : along;
-      const z = vertical ? along : line;
-      const node = this._nearestNode(x, z);
-      const rec = this.fleet.add({
-        kind: 'traffic', x, z,
-        heading: vertical ? (r() < 0.5 ? 0 : Math.PI) : (r() < 0.5 ? Math.PI / 2 : -Math.PI / 2),
-        speed: TRAFFIC.speedMin + r() * (TRAFFIC.speedMax - TRAFFIC.speedMin),
-        targetSpeed: TRAFFIC.speedMin + r() * (TRAFFIC.speedMax - TRAFFIC.speedMin),
-        color: colors[Math.floor(r() * colors.length)], owned: false,
-        node, next: this._pickNext(node, null),
-      });
-      this.cars.push(rec);
-    }
-  }
-
-  _nearestNode(x, z) {
-    let best = null, bd = 1e9;
-    for (const nx of WORLD.roadLines) {
-      for (const nz of WORLD.roadLines) {
-        const d = (nx - x) * (nx - x) + (nz - z) * (nz - z);
-        if (d < bd) { bd = d; best = { x: nx, z: nz }; }
-      }
-    }
-    return best;
-  }
-
-  _pickNext(node, prev) {
-    const opts = [];
-    const lines = WORLD.roadLines;
-    const ix = lines.indexOf(node.x), iz = lines.indexOf(node.z);
-    if (ix > 0) opts.push({ x: lines[ix - 1], z: node.z });
-    if (ix < lines.length - 1) opts.push({ x: lines[ix + 1], z: node.z });
-    if (iz > 0) opts.push({ x: node.x, z: lines[iz - 1] });
-    if (iz < lines.length - 1) opts.push({ x: node.x, z: lines[iz + 1] });
-    const filtered = prev ? opts.filter((o) => o.x !== prev.x || o.z !== prev.z) : opts;
-    const pool = filtered.length ? filtered : opts;
-    return pool[Math.floor(Math.random() * pool.length)];
-  }
-
-  _angleTo(ax, az, bx, bz) {
-    return Math.atan2(bx - ax, bz - az);
-  }
-
-  _turnToward(rec, targetHeading, dt, rate) {
-    let diff = targetHeading - rec.heading;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    const step = Math.max(-rate * dt, Math.min(rate * dt, diff));
-    rec.heading += step;
-  }
-
-  update(dt, playerCar) {
-    for (const c of this.cars) {
-      // Herding (dipakai alat screenshot): bila lane disetel, mobil
-      // mengikuti garis lane itu, bukan graf simpul.
-      if (c.lane) {
-        c.speed += (c.targetSpeed - c.speed) * Math.min(1, dt * 2);
-        const dir = c.lane.dir || 1;
-        if (c.lane.vertical) {
-          c.x = c.lane.line;
-          c.z += dir * c.speed * dt;
-          if (c.z > 182) { c.z = 182; c.lane.dir = -1; }
-          if (c.z < -182) { c.z = -182; c.lane.dir = 1; }
-          c.heading = dir >= 0 ? 0 : Math.PI;
-        } else {
-          c.z = c.lane.line;
-          c.x += dir * c.speed * dt;
-          if (c.x > 182) { c.x = 182; c.lane.dir = -1; }
-          if (c.x < -182) { c.x = -182; c.lane.dir = 1; }
-          c.heading = dir >= 0 ? Math.PI / 2 : -Math.PI / 2;
+  // ---- Lalu lintas ----
+  function updateTraffic(dt) {
+    for (var i = 0; i < cars.length; i++) {
+      var car = cars[i];
+      if (car === playerCar) continue;
+      // Mobil yang dipegang alat screenshot (speed 0 + target 0) tetap diam.
+      var held = car.speed === 0 && car.targetSpeed === 0;
+      var desired = held ? 0 : car.cruise;
+      if (!held) {
+        // Pelan bila ada mobil di depan pada jalur yang sama.
+        for (var j = 0; j < cars.length; j++) {
+          if (i === j) continue;
+          var o = cars[j];
+          if (!o.lane || !car.lane) continue;
+          if (o.lane.vertical !== car.lane.vertical || o.lane.line !== car.lane.line || o.lane.dir !== car.lane.dir) continue;
+          var along = car.lane.vertical ? (o.mesh.position.z - car.mesh.position.z) * car.lane.dir
+            : (o.mesh.position.x - car.mesh.position.x) * car.lane.dir;
+          if (along > 0 && along < 13) desired = Math.min(desired, o.speed);
         }
-        continue;
       }
-      // Menuju simpul berikutnya.
-      const dx = c.next.x - c.x, dz = c.next.z - c.z;
-      const dist = Math.hypot(dx, dz);
-      if (dist < 4) {
-        c.node = c.next;
-        c.next = this._pickNext(c.node, c.node);
-        continue;
+      car.targetSpeed = desired;
+      car.speed += (desired - car.speed) * Math.min(1, dt * 2.5);
+      if (Math.abs(car.speed) < 0.05 && desired === 0) car.speed = 0;
+      if (car.lane.vertical) {
+        car.mesh.position.x = car.lane.line;
+        car.mesh.position.z += car.lane.dir * car.speed * dt;
+        if (car.mesh.position.z > 205) car.mesh.position.z = -205;
+        if (car.mesh.position.z < -205) car.mesh.position.z = 205;
+        car.heading = car.lane.dir > 0 ? 0 : Math.PI;
+      } else {
+        car.mesh.position.z = car.lane.line;
+        car.mesh.position.x += car.lane.dir * car.speed * dt;
+        if (car.mesh.position.x > 205) car.mesh.position.x = -205;
+        if (car.mesh.position.x < -205) car.mesh.position.x = 205;
+        car.heading = car.lane.dir > 0 ? Math.PI / 2 : -Math.PI / 2;
       }
-      const wantHeading = this._angleTo(c.x, c.z, c.next.x, c.next.z);
-      this._turnToward(c, wantHeading, dt, 2.2);
-      // Melambat bila mobil pemain tepat di depan.
-      let target = c.targetSpeed;
+      car.mesh.rotation.y = car.heading;
+    }
+  }
+
+  // Mobil terdekat (parkir atau lalu lintas) dalam radius tertentu.
+  function nearestCar(x, z, radius) {
+    var best = null, bestD = radius;
+    function scan(list) {
+      for (var i = 0; i < list.length; i++) {
+        var c = list[i];
+        if (c === playerCar) continue;
+        var d = Math.hypot(c.mesh.position.x - x, c.mesh.position.z - z);
+        if (d < bestD) { bestD = d; best = c; }
+      }
+    }
+    scan(parked);
+    scan(cars);
+    return best ? { car: best, dist: bestD } : null;
+  }
+
+  window.NBVehicles = {
+    cars: cars,
+    parked: parked,
+    playerCar: null,
+    makeCarMesh: makeCarMesh,
+    init: function (sc) {
+      scene = sc;
+      for (var i = 0; i < C.trafficCount; i++) cars.push(randomLaneCar(i));
+      spawnParked();
+    },
+    update: function (dt) { updateTraffic(dt); },
+    nearestCar: nearestCar,
+    // Mobil yang sedang dikendarai pemain (null bila jalan kaki).
+    getPlayerCar: function () { return playerCar; },
+    setPlayerCar: function (c) { playerCar = c; this.playerCar = c; },
+    // Fisika mobil pemain: dipanggil main.js tiap tick saat inCar.
+    drivePlayerCar: function (car, input, dt, game) {
+      var accel = 0;
+      if (input.down('KeyW') || input.down('ArrowUp')) accel = C.carAccel;
+      if (input.down('KeyS') || input.down('ArrowDown')) accel = -C.carAccel * 0.8;
+      var handbrake = input.down('Space');
+      if (handbrake) {
+        car.speed -= car.speed * Math.min(1, dt * 4);
+      } else {
+        car.speed += accel * dt;
+      }
+      // Gesekan + batas kecepatan.
+      car.speed -= car.speed * 0.12 * dt;
+      if (car.speed > C.carTopSpeed) car.speed = C.carTopSpeed;
+      if (car.speed < -C.carReverseSpeed) car.speed = -C.carReverseSpeed;
+      if (Math.abs(car.speed) < 0.15 && accel === 0) car.speed = 0;
+      // Belok (berbalik saat mundur).
+      var steer = 0;
+      if (input.down('KeyA') || input.down('ArrowLeft')) steer = 1;
+      if (input.down('KeyD') || input.down('ArrowRight')) steer = -1;
+      var spdFrac = Math.min(1, Math.abs(car.speed) / 10);
+      car.heading += steer * C.carTurnRate * spdFrac * dt * (car.speed >= 0 ? 1 : -1);
+      // Gerak + tabrakan gedung/laut (geser).
+      var nx = car.mesh.position.x + Math.sin(car.heading) * car.speed * dt;
+      var nz = car.mesh.position.z + Math.cos(car.heading) * car.speed * dt;
+      var moved = window.NBWorld.slideMove(car.mesh.position.x, car.mesh.position.z, nx - car.mesh.position.x, nz - car.mesh.position.z, 1.4);
+      var hitWall = Math.hypot(moved.x - nx, moved.z - nz) > 0.05;
+      if (hitWall) {
+        car.speed *= 0.45;
+        if (Math.abs(car.speed) > 3) game.onCrash();
+      }
+      car.mesh.position.x = moved.x;
+      car.mesh.position.z = moved.z;
+      car.mesh.rotation.y = car.heading;
+      return hitWall;
+    },
+    // Masuk/keluar mobil (dipanggil tombol E & NBGame.tryEnterCar).
+    // Masuk mobil apa pun = mencuri: +1 wanted.
+    tryEnterCar: function (game) {
       if (playerCar) {
-        const px = playerCar.x - c.x, pz = playerCar.z - c.z;
-        const pd = Math.hypot(px, pz);
-        const fx = Math.sin(c.heading), fz = Math.cos(c.heading);
-        if (pd < TRAFFIC.slowAheadDist && (px * fx + pz * fz) / Math.max(pd, 0.01) > 0.7) {
-          target = 0;
-        }
+        // Keluar: letakkan pemain di samping mobil.
+        var car = playerCar;
+        var px = car.mesh.position.x, pz = car.mesh.position.z;
+        var lx = Math.cos(car.heading), lz = -Math.sin(car.heading);
+        var spot = null;
+        [[lx, lz], [-lx, -lz], [-Math.sin(car.heading), -Math.cos(car.heading)]].forEach(function (o) {
+          if (spot) return;
+          var cx = px + o[0] * 2.2, cz = pz + o[1] * 2.2;
+          if (!window.NBWorld.isBlocked(cx, cz, 0.6)) spot = { x: cx, z: cz };
+        });
+        if (!spot) spot = { x: px + lx * 2.2, z: pz + lz * 2.2 };
+        playerCar = null;
+        this.playerCar = null;
+        game.exitCar(spot.x, spot.z, car.heading);
+        return { entered: false, x: spot.x, z: spot.z };
       }
-      c.speed += (target - c.speed) * Math.min(1, dt * 2);
-      c.x += Math.sin(c.heading) * c.speed * dt;
-      c.z += Math.cos(c.heading) * c.speed * dt;
-      const fixed = this.world.resolveCollision(c.x, c.z, 2.2);
-      c.x = fixed.x; c.z = fixed.z;
-    }
-  }
-
-  // Mobil terdekat (parkir atau lalu lintas) dalam jarak d dari titik.
-  // Batas inklusif (<=): mobil tepat di radius d tetap terjangkau E.
-  nearestCar(x, z, d) {
-    let best = null, bd = d;
-    for (const c of [...this.parked, ...this.cars]) {
-      const dd = Math.hypot(c.x - x, c.z - z);
-      if (dd <= bd) { bd = dd; best = c; }
-    }
-    return best;
-  }
-
-  // Mobil berhenti jadi milik pemain (keluar dari lalu lintas/parkir).
-  claimCar(rec) {
-    const i = this.cars.indexOf(rec);
-    if (i >= 0) this.cars.splice(i, 1);
-    const j = this.parked.indexOf(rec);
-    if (j >= 0) this.parked.splice(j, 1);
-    rec.kind = 'player';
-    this.playerCar = rec;
-    return rec;
-  }
-
-  // Mobil pemain ditinggalkan: kembali jadi mobil parkir di tempatnya.
-  releaseCar(rec) {
-    rec.kind = 'parked';
-    rec.speed = 0;
-    rec.targetSpeed = 0;
-    if (this.playerCar === rec) this.playerCar = null;
-    this.parked.push(rec);
-  }
-}
+      var near = nearestCar(game.playerPos.x, game.playerPos.z, C.carEnterRadius);
+      if (!near) return null;
+      var c = near.car;
+      playerCar = c;
+      this.playerCar = c;
+      // Mobil lalu lintas yang dicuri berhenti jadi mobil parkir.
+      if (c.kind === 'traffic') {
+        var idx = cars.indexOf(c);
+        if (idx >= 0) cars.splice(idx, 1);
+        c.kind = 'parked';
+        parked.push(c);
+      }
+      game.enterCar(c);
+      return { entered: true, car: c };
+    },
+  };
+})();

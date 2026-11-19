@@ -1,83 +1,154 @@
-// Neon Bay — combat: pukul + pistol (v3, dari nol).
-// Garis tembak DIPAKAI ULANG (satu garis, geometri tetap) supaya tidak bocor.
-// Aturan panas: tembakan yang meleset TIDAK menaikkan wanted; tembakan yang
-// mengenai preman (musuh) juga tidak; hanya yang mengenai pejalan kaki yang
-// menaikkan wanted. Pukulan ke preman tidak menaikkan wanted.
+// Neon Bay — pertarungan: tinju (F) + tembak (klik mouse).
+// Tembakan TIDAK menaikkan wanted (baik kena preman maupun meleset),
+// supaya jalur pistol misi 5 tetap bisa dimainkan. Tinju ke preman juga
+// tidak menaikkan wanted; tinju ke pejalan kaki +1 bintang.
+// Tracer peluru dibuat per tembakan lalu dibuang (tanpa bocor geometri).
+(function () {
+  'use strict';
 
-const THREE = window.THREE;
+  var C = window.NB_CONFIG;
+  var scene = null;
+  var raycaster = null;
+  var tracers = []; // {line, ttl}
+  var punchCd = 0;
 
-import { PLAYER } from './config.js';
-
-export class Combat {
-  constructor(scene) {
-    this.scene = scene;
-    this.punchTimer = 0;
-    this.gunTimer = 0;
-    this.tracerTimer = 0;
-    // Satu garis tembak yang dipakai ulang untuk semua tembakan.
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3));
-    const mat = new THREE.LineBasicMaterial({ color: 0xffe14d, transparent: true, opacity: 0.9 });
-    this.tracer = new THREE.Line(geo, mat);
-    this.tracer.visible = false;
-    this.tracer.frustumCulled = false;
-    scene.add(this.tracer);
+  function init(sc) {
+    scene = sc;
+    raycaster = new THREE.Raycaster();
   }
 
-  update(dt) {
-    this.punchTimer -= dt;
-    this.gunTimer -= dt;
-    if (this.tracerTimer > 0) {
-      this.tracerTimer -= dt;
-      if (this.tracerTimer <= 0) this.tracer.visible = false;
+  // Jarak terdekat ray ke bola (pusat, radius). -1 bila tidak kena.
+  function raySphere(ox, oy, oz, dx, dy, dz, cx, cy, cz, r) {
+    var lx = cx - ox, ly = cy - oy, lz = cz - oz;
+    var t = lx * dx + ly * dy + lz * dz;
+    if (t < 0) return -1;
+    var px = ox + dx * t, py = oy + dy * t, pz = oz + dz * t;
+    var dd = Math.hypot(cx - px, cy - py, cz - pz);
+    if (dd > r) return -1;
+    return t;
+  }
+
+  // Ray vs AABB gedung (slab). -1 bila tidak kena, else jarak masuk.
+  function rayBox(ox, oy, oz, dx, dy, dz, b) {
+    var tmin = 0, tmax = 1e9;
+    var o = [ox, oy, oz], d = [dx, dy, dz];
+    var mn = [b.minX, 0, b.minZ], mx = [b.maxX, 30, b.maxZ];
+    for (var i = 0; i < 3; i++) {
+      if (Math.abs(d[i]) < 1e-8) {
+        if (o[i] < mn[i] || o[i] > mx[i]) return -1;
+      } else {
+        var t1 = (mn[i] - o[i]) / d[i];
+        var t2 = (mx[i] - o[i]) / d[i];
+        if (t1 > t2) { var tmp = t1; t1 = t2; t2 = tmp; }
+        if (t1 > tmin) tmin = t1;
+        if (t2 < tmax) tmax = t2;
+        if (tmin > tmax) return -1;
+      }
+    }
+    return tmin;
+  }
+
+  function addTracer(from, to) {
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(
+      [from.x, from.y, from.z, to.x, to.y, to.z], 3));
+    var line = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe9b0 }));
+    scene.add(line);
+    tracers.push({ line: line, ttl: 0.09 });
+  }
+
+  function updateTracers(dt) {
+    for (var i = tracers.length - 1; i >= 0; i--) {
+      tracers[i].ttl -= dt;
+      if (tracers[i].ttl <= 0) {
+        scene.remove(tracers[i].line);
+        tracers[i].line.geometry.dispose();
+        tracers[i].line.material.dispose();
+        tracers.splice(i, 1);
+      }
     }
   }
 
-  // Pukulan: mengenai SEMUA preman + pejalan kaki dalam jangkauan
-  // (tanpa cek arah — tinju jarak dekat).
-  // Kembalikan daftar yang kena (dengan arah dorong).
-  punch(px, pz, heading, people) {
-    if (this.punchTimer > 0) return [];
-    this.punchTimer = PLAYER.punchCooldown;
-    const hits = [];
-    const check = (t) => {
-      if (!t.alive) return;
-      const dx = t.x - px, dz = t.z - pz;
-      const d = Math.hypot(dx, dz);
-      if (d < PLAYER.punchRange + 0.6) {
-        hits.push({ target: t, dirX: dx / Math.max(d, 0.01), dirZ: dz / Math.max(d, 0.01) });
-      }
-    };
-    for (const t of people.thugs) check(t);
-    for (const p of people.peds) check(p);
-    return hits;
+  // Tinju: preman terdekat dalam jangkauan kena 1 damage + knockback.
+  // Pejalan kaki yang kena tinju lari + wanted +1. Preman tidak menaikkan wanted.
+  function punch(game) {
+    if (punchCd > 0) return false;
+    punchCd = 0.35;
+    var px = game.playerPos.x, pz = game.playerPos.z;
+    var best = null, bestD = C.punchRange;
+    window.NBPeople.thugs.forEach(function (t) {
+      if (t.hp <= 0) return;
+      var d = Math.hypot(t.mesh.position.x - px, t.mesh.position.z - pz);
+      if (d < bestD) { bestD = d; best = { kind: 'thug', t: t }; }
+    });
+    if (!best) {
+      window.NBPeople.peds.forEach(function (p) {
+        var d = Math.hypot(p.mesh.position.x - px, p.mesh.position.z - pz);
+        if (d < bestD) { bestD = d; best = { kind: 'ped', t: p }; }
+      });
+    }
+    window.NBAudio.punch();
+    if (!best) return false;
+    if (best.kind === 'thug') {
+      window.NBPeople.damageThug(best.t, C.punchDamage, px, pz);
+    } else {
+      // Pejalan kaki: lari menjauh + wanted naik.
+      var p = best.t;
+      var dx = p.mesh.position.x - px, dz = p.mesh.position.z - pz;
+      var d = Math.hypot(dx, dz) || 1;
+      p.target = { x: p.mesh.position.x + (dx / d) * 60, z: p.mesh.position.z + (dz / d) * 60 };
+      p.speed = 4.5;
+      game.addWanted(1);
+    }
+    return true;
   }
 
-  // Tembakan: sinar dari pemain ke arah kamera (yaw kamera). Kembalikan hasil:
-  // {hit: 'thug'|'ped'|null, target, endX, endZ}
-  shoot(px, pz, py, aimYaw, people) {
-    if (this.gunTimer > 0) return null;
-    this.gunTimer = PLAYER.gunCooldown;
-    const dx = Math.sin(aimYaw), dz = Math.cos(aimYaw);
-    let best = null, bestD = PLAYER.gunRange;
-    const test = (t, kind) => {
-      if (!t.alive) return;
-      const rx = t.x - px, rz = t.z - pz;
-      const along = rx * dx + rz * dz;
-      if (along < 0.5 || along > bestD) return;
-      const perp = Math.abs(rx * dz - rz * dx);
-      if (perp < 1.5) { bestD = along; best = { hit: kind, target: t }; }
-    };
-    for (const t of people.thugs) test(t, 'thug');
-    for (const p of people.peds) test(p, 'ped');
-    const endX = px + dx * bestD, endZ = pz + dz * bestD;
-    // Gambar ulang garis yang sama (posisi ditulis ke buffer yang sudah ada).
-    const pos = this.tracer.geometry.attributes.position;
-    pos.setXYZ(0, px, py, pz);
-    pos.setXYZ(1, endX, py, endZ);
-    pos.needsUpdate = true;
-    this.tracer.visible = true;
-    this.tracerTimer = 0.12;
-    return { ...(best || { hit: null, target: null }), endX, endZ };
+  // Tembak lewat titik klik layar. Ray dari kamera; kena preman terdekat
+  // yang tidak terhalang gedung (bola dada radius 1,3 m — pemaaf).
+  function shoot(game, clientX, clientY) {
+    if (!game.hasGun) return false;
+    var w = window.innerWidth, h = window.innerHeight;
+    var nx = (clientX / w) * 2 - 1;
+    var ny = -(clientY / h) * 2 + 1;
+    raycaster.setFromCamera({ x: nx, y: ny }, game.camera);
+    var ro = raycaster.ray.origin;
+    var rd = raycaster.ray.direction;
+    var px = game.playerPos.x, pz = game.playerPos.z;
+    // Jarak gedung terdekat di sepanjang ray (penghalang).
+    var blockD = 1e9;
+    window.NBWorld.buildings.forEach(function (b) {
+      var t = rayBox(ro.x, ro.y, ro.z, rd.x, rd.y, rd.z, b);
+      if (t >= 0 && t < blockD) blockD = t;
+    });
+    var best = null, bestT = 1e9;
+    window.NBPeople.thugs.forEach(function (t) {
+      if (t.hp <= 0) return;
+      var m = t.mesh.position;
+      var tt = raySphere(ro.x, ro.y, ro.z, rd.x, rd.y, rd.z, m.x, 1.15, m.z, 1.35);
+      if (tt >= 0 && tt < bestT) { bestT = tt; best = t; }
+    });
+    var from = { x: px, y: 1.3, z: pz };
+    var to;
+    if (best && bestT < blockD) {
+      to = { x: ro.x + rd.x * bestT, y: ro.y + rd.y * bestT, z: ro.z + rd.z * bestT };
+      window.NBPeople.damageThug(best, C.gunDamage, px, pz);
+    } else {
+      var far = Math.min(blockD < 1e8 ? blockD : 120, 120);
+      to = { x: ro.x + rd.x * far, y: Math.max(0.4, ro.y + rd.y * far), z: ro.z + rd.z * far };
+    }
+    addTracer(from, to);
+    window.NBAudio.gunshot();
+    // Menembak TIDAK menaikkan wanted (misi 5 tetap bisa dimainkan).
+    return true;
   }
-}
+
+  window.NBCombat = {
+    init: init,
+    punch: punch,
+    shoot: shoot,
+    update: function (dt) {
+      punchCd = Math.max(0, punchCd - dt);
+      updateTracers(dt);
+    },
+  };
+})();

@@ -1,252 +1,214 @@
-// Neon Bay — rantai 6 misi dari Mara Voss (v3, dari nol).
-// Alur misi: ajar -> uji -> klimaks. Tiap misi: teks pengantar, suar emas,
-// kotak misi di HUD, timer bila ada. Gagal bila waktu habis (R = retry).
-// Perbaikan v2: nyawa penuh di tiap awal misi; misi 6 selesai hanya bila
-// sampai garasi DAN wanted sudah 0; misi 3 menghitung mobil curian yang
-// sedang diduduki saat misi dimulai.
+// Neon Bay — misi: 6 job berantai (Dex Marlowe untuk Mara Voss).
+// phase adalah STRING nama tahap (toPier/pickup/toHome/steal/toBuyer/
+// loseheat/fight/toBank/escape). Misi berikut mulai otomatis ~2,8 dtk
+// setelah misi sebelumnya selesai. Sembuh penuh tiap awal misi.
+(function () {
+  'use strict';
 
-import { MISSIONS } from './config.js';
+  var C = window.NB_CONFIG;
+  var M = {
+    index: 0,
+    stageIdx: 0,
+    stage: 'toPier',
+    active: null,
+    timer: 0,
+    pendingNext: 0,
+    stageHold: 0,
+    failTimer: 0,
+  };
 
-export class MissionChain {
-  constructor(game) {
-    this.game = game;
-    this.__idx = 0;       // 0..5 misi berjalan, 6 = semua selesai (free roam)
-    this._allowBack = false; // izin sekali untuk memundurkan index (reset eksplisit)
-    this.stage = 0;
-    this.timer = null;
-    this.active = false;
-    this.failed = false;
-    this.pendingNext = 0;    // jeda sebelum misi berikut mulai
-    this.stolenCounted = false;
+  function def() { return C.missions[M.index] || null; }
+  function stageDef() {
+    var d = def();
+    return d ? d.stages[M.stageIdx] : null;
   }
 
-  // Normalisasi index misi: angka, objek definisi misi (id), nama, atau objek state.
-  static _toIndex(v) {
-    if (v && typeof v === 'object') {
-      if (typeof v.id === 'number') return v.id;
-      if (typeof v.mission === 'number') return v.mission;
-      if (typeof v.index === 'number') return v.index;
-      const k = MISSIONS.indexOf(v);
-      return k >= 0 ? k : 0;
+  function setStage(i) {
+    M.stageIdx = i;
+    var s = stageDef();
+    M.stage = s ? s.name : '';
+    M.stageHold = 0;
+    var d = def();
+    // Beacon mengikuti target tahap (disembunyikan bila tak ada lokasi).
+    if (s && s.target) {
+      window.NBWorld.setObjective(s.target.x, s.target.z);
+    } else if (s && s.name === 'pickup' && d && d.stages[0].target) {
+      // Tahap 'pickup' singkat: beacon tetap di target tahap sebelumnya.
+    } else {
+      window.NBWorld.setObjective(null);
     }
-    if (typeof v === 'string') {
-      const n = Number(v);
-      if (Number.isFinite(n)) return Math.floor(n);
-      const k = MISSIONS.findIndex((m) => m.name === v || m.title === v);
-      return k >= 0 ? k : 0;
-    }
-    return v;
   }
 
-  get _index() { return this.__idx; }
-  set _index(v) {
-    // Cegah index mundur diam-diam (pernah terjadi 2 -> 0 tanpa pemanggil yang
-    // jelas). Mundur hanya diizinkan bila _allowBack disetel oleh reset eksplisit
-    // (init/reset/restart/Game.mission).
-    if (v < this.__idx && !this._allowBack) {
+  function start(game) {
+    var d = def();
+    if (!d) {
+      // Semua job selesai: free roam.
+      M.active = null;
+      M.stage = '';
+      M.timer = 0;
+      window.NBWorld.setObjective(null);
       return;
     }
-    this._allowBack = false;
-    this.__idx = v;
-  }
-
-  get index() { return this._index; }
-  // Menetapkan index HANYA mengubah penunjuk (tanpa memulai ulang).
-  // Alat tes memanggil start() sesudahnya untuk memulai misi itu; bila start()
-  // tidak dipanggil, update() tetap memakai def misi baru (tahap 'steal' dsb).
-  // (Auto-start di setter dicabut: ia membuat misi 3 kembali ke 0 bila init()
-  // dipanggil sesudahnya dalam urutan yang sama.)
-  set index(v) { this._index = MissionChain._toIndex(v); }
-
-  get def() { return MISSIONS[this.index]; }
-  get done() { return this.index >= MISSIONS.length; }
-  // Nama fase misi saat ini (string, mis. 'toPier', 'toHome', 'steal').
-  // Alat tes membandingkan langsung: phase === 'toHome' sesudah pickup/steal.
-  get phase() {
-    const s = this._stage();
-    return s && s.phase ? s.phase : 'idle';
-  }
-  get current() { return this.def; }
-  // Mulai misi ke-i dari awal (alat tes: NBMissions.init(i)).
-  init(i) { this._allowBack = true; this.startMission(i === undefined || i === null ? 0 : i); }
-  // Mulai misi pada index saat ini (alat tes: NBMissions.index = n; NBMissions.start()).
-  start(i) {
-    this.startMission(i === undefined || i === null ? this.index : i);
-  }
-  reset() { this._allowBack = true; this.init(0); }
-
-  startMission(i) {
-    this._index = MissionChain._toIndex(i);
-    this.stage = 0;
-    this.failed = false;
-    this.active = true;
-    this.pendingNext = 0;
-    this.stolenCounted = false;
-    const def = this.def;
-    if (!def) { this.active = false; return; }
-    this.timer = def.timeLimit || null;
-    this.game.healFull();
-    if (def.forceWanted !== undefined) this.game.setWanted(def.forceWanted);
-    else this.game.setWanted(0);
-    if (def.giveGun) {
-      this.game.giveGun();
-      this.game.toast('Pistol acquired — CLICK to shoot', 5);
+    M.active = d;
+    M.stageIdx = 0;
+    M.pendingNext = 0;
+    M.failTimer = 0;
+    M.timer = d.timer || 0;
+    game.heal();
+    setStage(0);
+    var s = stageDef();
+    // Tahap yang butuh mobil: bila pemain sudah di mobil, langsung lanjut.
+    if (s && s.needCar && game.inCar) advance(game);
+    if (M.index === 3) {
+      // JOB 4: wanted dipaksa 2.
+      game.setWanted(2);
     }
-    this.game.world.setBeacon(0, 0, false);
-    this._setupStage();
-    this.game.toast(def.intro, 6);
-    this.game.hud.setMission(def.title, this._stageText(), this.timer);
+    if (M.index === 4) {
+      // JOB 5: 3 preman muncul di dermaga.
+      window.NBPeople.spawnThugs(C.pier.x, C.pier.z);
+    }
+    game.updateMissionBox();
   }
 
-  _stage() {
-    const def = this.def;
-    return def ? def.stages[this.stage] : null;
+  // Reset keras (tanpa memulai): dipakai tes + tombol restart.
+  function init(n) {
+    M.index = (n === undefined || n === null) ? 0 : n;
+    M.stageIdx = 0;
+    M.stage = (C.missions[M.index] && C.missions[M.index].stages[0]) ? C.missions[M.index].stages[0].name : '';
+    M.active = null;
+    M.timer = 0;
+    M.pendingNext = 0;
+    M.stageHold = 0;
+    M.failTimer = 0;
+    window.NBPeople.clearThugs();
   }
 
-  _stageText() {
-    const s = this._stage();
-    return s ? s.text : '';
+  function advance(game) {
+    var d = def();
+    if (!d) return;
+    M.stageIdx++;
+    if (M.stageIdx >= d.stages.length) {
+      complete(game);
+      return;
+    }
+    setStage(M.stageIdx);
+    var s = stageDef();
+    if (s && s.needCar && game.inCar) advance(game);
+    game.updateMissionBox();
   }
 
-  _setupStage() {
-    const s = this._stage();
+  function complete(game) {
+    var d = def();
+    if (!d) return;
+    game.cash += d.reward;
+    window.NBAudio.missionDone();
+    window.NBAudio.cash();
+    game.banner(d.title + ' COMPLETE', '+$' + d.reward);
+    game.saveGame();
+    M.active = null;
+    M.timer = 0;
+    if (M.index >= C.missions.length - 1) {
+      // Job terakhir: free roam.
+      M.index = C.missions.length;
+      M.stage = '';
+      window.NBWorld.setObjective(null);
+      game.toast('ALL JOBS DONE — free roam. The bay is yours, Dex.', 6);
+    } else {
+      M.index++;
+      M.pendingNext = 2.8;
+      M.stage = '';
+    }
+    game.updateMissionBox();
+  }
+
+  function fail(game, reason) {
+    var d = def();
+    if (!d || M.failTimer > 0) return;
+    M.failTimer = 2.5;
+    game.banner('MISSION FAILED', reason);
+    window.NBAudio.wasted();
+  }
+
+  function restart(game) {
+    init(M.index);
+    start(game);
+  }
+
+  function update(dt, game) {
+    if (M.failTimer > 0) {
+      M.failTimer -= dt;
+      if (M.failTimer <= 0) restart(game);
+      return;
+    }
+    if (M.pendingNext > 0) {
+      M.pendingNext -= dt;
+      if (M.pendingNext <= 0) {
+        M.pendingNext = 0;
+        start(game);
+      }
+      return;
+    }
+    if (!M.active) return;
+    var d = def();
+    var s = stageDef();
     if (!s) return;
-    const g = this.game;
-    if (s.kind === 'go' || s.kind === 'escape') {
-      g.world.setBeacon(s.pos.x, s.pos.z, true);
-    } else if (s.kind === 'thugs') {
-      g.world.setBeacon(s.pos.x, s.pos.z, true);
-      // Jangan spawn ulang bila preman sudah ada (alat tes memanggil mission(4)
-      // dua kali; spawn ulang akan mereset HP preman yang sudah dipukul).
-      if (g.people.thugs.length === 0) g.people.spawnThugs(s.pos.x, s.pos.z, s.count);
-    } else {
-      g.world.setBeacon(0, 0, false);
-    }
-    if (s.kind === 'steal') {
-      // Mobil curian yang sedang diduduki saat misi dimulai langsung dihitung.
-      if (g.player.inCar && g.player.car && !g.player.car.owned) {
-        this.stolenCounted = true;
-      }
-    }
-  }
-
-  _nextStage() {
-    const def = this.def;
-    this.stage++;
-    if (this.stage >= def.stages.length) {
-      this._complete();
-      return;
-    }
-    this._setupStage();
-    this.game.hud.setMission(def.title, this._stageText(), this.timer);
-  }
-
-  _complete() {
-    const def = this.def;
-    const g = this.game;
-    g.money += def.reward;
-    g.audio.cash();
-    g.banner('JOB COMPLETE', `${def.title}  ·  +$${def.reward}`);
-    g.toast(`${def.title} complete — $${def.reward}`, 4);
-    g.world.setBeacon(0, 0, false);
-    g.people.clearThugs();
-    this.active = false;
-    this._index++;
-    // Simpan SESUDAH index naik supaya save mencerminkan misi berikutnya.
-    g.save();
-    if (this.index >= MISSIONS.length) {
-      g.banner('NEON BAY LEGEND', 'All six jobs done — the city is yours. Free roam!');
-      g.hud.setMission('FREE ROAM', 'All jobs complete. Explore Neon Bay.', null);
-      g.save();
-    } else {
-      this.pendingNext = 1.4;
-    }
-  }
-
-  fail() {
-    this.failed = true;
-    this.active = false;
-    this.game.audio.fail();
-    this.game.toast('Mission failed — press R to retry', 5);
-    this.game.hud.setMission(this.def.title, 'FAILED — press R to retry', null);
-  }
-
-  restart() {
-    // Ulang misi yang sedang berjalan dari awal: posisi ke garasi.
-    const g = this.game;
-    g.respawnAtGarage();
-    this._allowBack = true;
-    this.startMission(this.index);
-    g._faceObjective(); // RONDE 3: restart menghadap objective
-    // D5: restart HARUS terlihat — banner besar + kamera sudah dijepret ke
-    // garasi oleh respawnAtGarage, jadi pemain langsung tahu ia kembali ke awal.
-    g.banner('JOB RESTARTED', `${this.def.title} — back at the garage`);
-  }
-
-  update(dt) {
-    if (this.pendingNext > 0) {
-      this.pendingNext -= dt;
-      if (this.pendingNext <= 0) {
-        this.startMission(this.index);
-      }
-      return;
-    }
-    if (!this.active || this.failed) return;
-    const g = this.game;
-    if (this.timer !== null) {
-      this.timer -= dt;
-      if (this.timer <= 0) {
-        this.timer = 0;
-        this.fail();
+    // Timer misi (JOB 2: 100 dtk, JOB 6: 240 dtk).
+    if (M.timer > 0) {
+      M.timer -= dt;
+      if (M.timer <= 0) {
+        M.timer = 0;
+        fail(game, "Time's up — press R to retry");
         return;
       }
-      g.hud.setMission(this.def.title, this._stageText(), Math.ceil(this.timer));
     }
-    // Satu panggilan update bisa menyelesaikan beberapa tahap berurutan
-    // (misal: sampai di pier lalu langsung mengambil paket).
-    for (let n = 0; n < 4; n++) {
-      const before = this.stage;
-      const s = this._stage();
-      if (!s || !this.active) break;
-      const p = g.player;
-      if (s.kind === 'go' || s.kind === 'pickup') {
-      const d = Math.hypot(p.x - s.pos.x, p.z - s.pos.z);
-      if (d <= s.radius) {
-        g.audio.pickup();
-        g.toast(s.done, 3);
-        // Misi 6: wanted naik ke 3 SESUDAH case diambil (alarm bank).
-        if (this.def.forceWantedAfterPickup !== undefined && this.stage === 0) {
-          g.setWanted(this.def.forceWantedAfterPickup);
-          g.toast('ALARM! Bay PD is coming — RUN!', 5);
-        }
-        this._nextStage();
-      }
-    } else if (s.kind === 'escape') {
-      const d = Math.hypot(p.x - s.pos.x, p.z - s.pos.z);
-      if (d <= s.radius && g.wanted === 0) {
-        g.audio.pickup();
-        g.toast(s.done, 3);
-        this._nextStage();
-      }
-    } else if (s.kind === 'steal') {
-      if (this.stolenCounted || (p.inCar && p.car && !p.car.owned)) {
-        g.toast(s.done, 3);
-        this._nextStage();
-      } else if (p.inCar && p.car && p.car.owned) {
-        g.hud.setMission(this.def.title, "That's your own car — steal a different one", this.timer);
-      }
-    } else if (s.kind === 'loseheat') {
-      if (g.wanted === 0) {
-        g.toast(s.done, 3);
-        this._nextStage();
-      }
-    } else if (s.kind === 'thugs') {
-      if (g.people.thugsAlive() === 0) {
-        g.toast(s.done, 3);
-        this._nextStage();
-      }
+    // Tahap 'pickup' singkat (JOB 1): tunggu 0,8 dtk lalu lanjut.
+    if (s.name === 'pickup' && s.hold) {
+      M.stageHold += dt;
+      if (M.stageHold >= s.hold) advance(game);
+      return;
     }
-      if (this.stage === before || !this.active) break;
+    if (s.needCar) {
+      if (game.inCar) advance(game);
+      return;
+    }
+    if (s.name === 'loseheat') {
+      if (game.wanted <= 0) complete(game);
+      return;
+    }
+    if (s.name === 'fight') {
+      // Pistol didapat saat tiba di dermaga (bila belum punya).
+      if (!game.hasGun) {
+        var dp = Math.hypot(game.playerPos.x - C.pier.x, game.playerPos.z - C.pier.z);
+        if (dp < 10) game.giveGun();
+      }
+      if (window.NBPeople.thugs.length === 0) complete(game);
+      return;
+    }
+    if (s.target) {
+      var dist = Math.hypot(game.playerPos.x - s.target.x, game.playerPos.z - s.target.z);
+      if (s.name === 'escape') {
+        if (dist <= s.radius && game.wanted <= 0) complete(game);
+        return;
+      }
+      if (dist <= s.radius) {
+        if (s.name === 'toPier' || s.name === 'toBank') window.NBAudio.pickup();
+        advance(game);
+      }
     }
   }
-}
+
+  window.NBMissions = {
+    get index() { return M.index; },
+    set index(v) { M.index = v; },
+    get stage() { return M.stage; },
+    get phase() { return M.stage; },
+    get active() { return M.active; },
+    get timer() { return M.timer; },
+    get pendingNext() { return M.pendingNext; },
+    init: init,
+    start: start,
+    restart: restart,
+    complete: complete,
+    update: update,
+  };
+})();

@@ -1,480 +1,459 @@
-// Neon Bay — kota 5x5 blok: jalan, gedung, pantai, dermaga, landmark (v3, dari nol).
-// Geometri statis digabung per blok jadi sedikit mesh (draw call rendah);
-// lampu jalan dan palem juga digabung. Tabrakan = daftar kotak AABB.
+// Neon Bay — dunia: kota 5x5 blok, dermaga, laut, langit senja, beacon.
+// Semua geometri statis digabung per kelompok supaya draw call sedikit
+// (menu < 100). Tabrakan gedung = AABB; laut dibatasi dinding pantai
+// kecuali koridor dermaga.
+(function () {
+  'use strict';
 
-const THREE = window.THREE;
+  var C = window.NB_CONFIG;
+  var scene = null;
+  var beacon = null;
+  var buildings = []; // AABB {minX,maxX,minZ,maxZ} untuk tabrakan
+  var rngState = 1234567;
 
-import { WORLD, LANDMARKS, COLORS } from './config.js';
+  function rng() {
+    rngState = (rngState * 1664525 + 1013904223) >>> 0;
+    return rngState / 4294967296;
+  }
+  function rr(a, b) { return a + rng() * (b - a); }
+  function pick(arr) { return arr[Math.floor(rng() * arr.length)]; }
 
-// Generator acak deterministik (seed tetap) supaya tata kota sama tiap load.
-function rng(seed) {
-  let s = seed >>> 0;
-  return () => {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    return s / 4294967296;
-  };
-}
+  // Gabung banyak BufferGeometry berindeks jadi satu (posisi+normal+warna).
+  function mergeGeoms(list) {
+    var pos = [], norm = [], col = [], idx = [], off = 0;
+    list.forEach(function (g) {
+      var p = g.attributes.position.array;
+      var n = g.attributes.normal.array;
+      var c = g.attributes.color ? g.attributes.color.array : null;
+      var i, k;
+      for (i = 0; i < p.length; i++) { pos.push(p[i]); norm.push(n[i]); }
+      if (c) { for (i = 0; i < c.length; i++) col.push(c[i]); }
+      else { for (k = 0; k < p.length / 3; k++) col.push(1, 1, 1); }
+      var ix = g.index.array;
+      for (i = 0; i < ix.length; i++) idx.push(ix[i] + off);
+      off += p.length / 3;
+    });
+    var geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.Float32BufferAttribute(norm, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(idx);
+    return geo;
+  }
 
-// Tekstur kanvas: fasad dengan jendela menyala (dipakai ulang semua gedung).
-function makeWindowTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256; c.height = 256;
-  const g = c.getContext('2d');
-  g.fillStyle = '#3d4258'; // D6: fasad lebih terang supaya gedung tidak hitam di malam hari
-  g.fillRect(0, 0, 256, 256);
-  const lit = ['#ffd76a', '#9fd8ff', '#ff9d5c', '#c9f2ff'];
-  for (let y = 0; y < 6; y++) {
-    for (let x = 0; x < 4; x++) {
-      const on = ((x * 7 + y * 3) % 5) !== 0;
-      g.fillStyle = on ? lit[(x + y) % lit.length] : '#14161f';
-      g.fillRect(14 + x * 60, 14 + y * 40, 34, 24);
+  // Kotak berwarna di posisi tertentu (boleh diputar pada sumbu Y).
+  function coloredBox(w, h, d, color, x, y, z, ry) {
+    var g = new THREE.BoxGeometry(w, h, d);
+    var q = new THREE.Quaternion();
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), ry || 0);
+    var m = new THREE.Matrix4();
+    m.compose(new THREE.Vector3(x, y, z), q, new THREE.Vector3(1, 1, 1));
+    g.applyMatrix4(m);
+    var c = new THREE.Color(color);
+    var n = g.attributes.position.count;
+    var arr = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  }
+
+  // Silinder berwarna (untuk tiang lampu / pohon).
+  function coloredCyl(rt, rb, h, color, x, y, z, seg) {
+    var g = new THREE.CylinderGeometry(rt, rb, h, seg || 6);
+    var m = new THREE.Matrix4();
+    m.makeTranslation(x, y, z);
+    g.applyMatrix4(m);
+    var c = new THREE.Color(color);
+    var n = g.attributes.position.count;
+    var arr = new Float32Array(n * 3);
+    for (var i = 0; i < n; i++) { arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b; }
+    g.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+    return g;
+  }
+
+  // ---- Tekstur tanah (digambar di canvas, 1 draw call) ----
+  function makeGroundTexture() {
+    var cv = document.createElement('canvas');
+    cv.width = 1024; cv.height = 1024;
+    var g = cv.getContext('2d');
+    var sx = 1024 / 420, sy = 1024 / 416;
+    var X = function (x) { return (x + 210) * sx; };
+    var Z = function (z) { return (z + 210) * sy; };
+    // Dasar: beton plaza gelap.
+    g.fillStyle = '#38344a';
+    g.fillRect(0, 0, 1024, 1024);
+    // Variasi blok: petak-petak beton sedikit berbeda.
+    var shades = ['#3a3648', '#353145', '#3e3a4e', '#322f42'];
+    var vx = [-160, -80, -35, 0, 35, 80, 160];
+    var vz = [-160, -95, 0, 80, 160];
+    var i, j;
+    for (i = 0; i < vx.length - 1; i++) {
+      for (j = 0; j < vz.length - 1; j++) {
+        g.fillStyle = shades[(i * 7 + j * 3) % shades.length];
+        g.fillRect(X(vx[i] + 6), Z(vz[j] + 6), (vx[i + 1] - vx[i] - 12) * sx, (vz[j + 1] - vz[j] - 12) * sy);
+      }
     }
+    // Jalan aspal.
+    g.fillStyle = '#221f2b';
+    vx.forEach(function (x) { g.fillRect(X(x - 6), 0, 12 * sx, 1024); });
+    vz.forEach(function (z) { g.fillRect(0, Z(z - 6), 1024, 12 * sy); });
+    // Garis tengah jalan (putus-putus kuning).
+    g.fillStyle = '#c9a227';
+    vx.forEach(function (x) {
+      for (var z = -205; z < 205; z += 14) g.fillRect(X(x) - 1, Z(z), 2, 7 * sy);
+    });
+    vz.forEach(function (z) {
+      for (var x = -205; x < 205; x += 14) g.fillRect(X(x), Z(z) - 1, 7 * sx, 2);
+    });
+    // Trotoar: tepi terang di sepanjang jalan.
+    g.fillStyle = '#4a4560';
+    vx.forEach(function (x) {
+      g.fillRect(X(x - 8), 0, 2 * sx, 1024);
+      g.fillRect(X(x + 6), 0, 2 * sx, 1024);
+    });
+    vz.forEach(function (z) {
+      g.fillRect(0, Z(z - 8), 1024, 2 * sy);
+      g.fillRect(0, Z(z + 6), 1024, 2 * sy);
+    });
+    // Zebra cross di persimpangan utama.
+    g.fillStyle = '#d8d8e0';
+    [[0, 0], [0, 80], [35, 0], [-35, 80], [80, 0]].forEach(function (p) {
+      for (var k = -5; k <= 5; k += 2) g.fillRect(X(p[0] + k) - 1, Z(p[1] - 5), 1.2 * sx, 10 * sy);
+    });
+    // Pantai: pasir di tepi selatan.
+    g.fillStyle = '#b89a5e';
+    g.fillRect(0, Z(196), 1024, (206 - 196) * sy);
+    g.fillStyle = '#c9ab6e';
+    for (var s = 0; s < 40; s++) {
+      g.fillRect(X(rr(-205, 205)), Z(rr(196, 205)), 3, 2);
+    }
+    var tex = new THREE.CanvasTexture(cv);
+    tex.anisotropy = 4;
+    return tex;
   }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = THREE.RepeatWrapping;
-  tex.wrapT = THREE.RepeatWrapping;
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 
-function makeSignTexture(text, fg, bg) {
-  const c = document.createElement('canvas');
-  c.width = 512; c.height = 128;
-  const g = c.getContext('2d');
-  g.fillStyle = bg;
-  g.fillRect(0, 0, 512, 128);
-  g.fillStyle = fg;
-  g.font = 'bold 64px sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText(text, 256, 68);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-// Penampung geometri gabungan: kotak dengan warna vertex + UV berulang per meter.
-class MergeBucket {
-  constructor() {
-    this.pos = []; this.nor = []; this.uv = []; this.col = []; this.idx = [];
-    this.v = 0;
+  // ---- Langit senja (kubah gradien) ----
+  function makeSkyTexture() {
+    var cv = document.createElement('canvas');
+    cv.width = 16; cv.height = 256;
+    var g = cv.getContext('2d');
+    var grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0.0, '#160a2e');
+    grad.addColorStop(0.45, '#3a1c63');
+    grad.addColorStop(0.72, '#8a2f7d');
+    grad.addColorStop(0.88, '#ff7a4d');
+    grad.addColorStop(1.0, '#ffb35c');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 16, 256);
+    var tex = new THREE.CanvasTexture(cv);
+    return tex;
   }
-  box(cx, cy, cz, sx, sy, sz, color, tile = 8) {
-    const x0 = cx - sx / 2, x1 = cx + sx / 2;
-    const y0 = cy - sy / 2, y1 = cy + sy / 2;
-    const z0 = cz - sz / 2, z1 = cz + sz / 2;
-    const r = ((color >> 16) & 255) / 255;
-    const g = ((color >> 8) & 255) / 255;
-    const b = (color & 255) / 255;
-    // [verts(4), normal, uSize, vSize] per sisi
-    const faces = [
-      { pts: [[x1, y0, z1], [x1, y1, z1], [x1, y1, z0], [x1, y0, z0]], n: [1, 0, 0], u: sz, v: sy },
-      { pts: [[x0, y0, z0], [x0, y1, z0], [x0, y1, z1], [x0, y0, z1]], n: [-1, 0, 0], u: sz, v: sy },
-      { pts: [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], n: [0, 1, 0], u: sx, v: sz },
-      { pts: [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]], n: [0, -1, 0], u: sx, v: sz },
-      { pts: [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], n: [0, 0, 1], u: sx, v: sy },
-      { pts: [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], n: [0, 0, -1], u: sx, v: sy },
+
+  function addBuilding(x, z, w, d, h, color) {
+    buildings.push({ minX: x - w / 2, maxX: x + w / 2, minZ: z - d / 2, maxZ: z + d / 2 });
+    return { x: x, z: z, w: w, d: d, h: h, color: color };
+  }
+
+  function buildCity() {
+    var bodyGeoms = [], winGeoms = [], neonGeoms = [];
+    var palette = [0x4a3f6b, 0x5a4a7a, 0x3d3558, 0x6b4a5a, 0x44506b, 0x54406b];
+    var neonCols = [0xff2d95, 0x00e5ff, 0xffb300, 0x7dff9a];
+    var placed = [];
+
+    // Zona larangan: jangan ada gedung acak di sini.
+    var keepOut = [
+      { x: 0, z: 120, r: 30 },      // garasi + halaman
+      { x: -58, z: -64, r: 26 },    // bank
+      { x: 140, z: 140, r: 24 },    // rumah sakit
+      { x: 150, z: 190, r: 22 },    // pendekatan dermaga
+      { x: 0, z: -150, r: 18 },     // pembeli misi 2
+      { x: 10, z: 144, r: 10 },     // mobil starter
+      { x: 0, z: 120, r: 8 },
     ];
-    for (const f of faces) {
-      const us = [0, f.u / tile, f.u / tile, 0];
-      const vs = [0, 0, f.v / tile, f.v / tile];
-      for (let i = 0; i < 4; i++) {
-        this.pos.push(f.pts[i][0], f.pts[i][1], f.pts[i][2]);
-        this.nor.push(f.n[0], f.n[1], f.n[2]);
-        this.uv.push(us[i], vs[i]);
-        this.col.push(r, g, b);
+    function clearOf(x, z, r) {
+      for (var i = 0; i < keepOut.length; i++) {
+        var k = keepOut[i];
+        if (Math.hypot(x - k.x, z - k.z) < r + k.r) return false;
       }
-      this.idx.push(this.v, this.v + 1, this.v + 2, this.v, this.v + 2, this.v + 3);
-      this.v += 4;
+      return true;
     }
-  }
-  pyramid(cx, cy, cz, w, h, color) {
-    // Piramida 4 sisi (untuk tajuk palem): alas di cy, puncak di cy+h.
-    const hw = w / 2;
-    const r = ((color >> 16) & 255) / 255;
-    const g = ((color >> 8) & 255) / 255;
-    const b = (color & 255) / 255;
-    const base = [
-      [cx - hw, cy, cz - hw], [cx + hw, cy, cz - hw],
-      [cx + hw, cy, cz + hw], [cx - hw, cy, cz + hw],
-    ];
-    const apex = [cx, cy + h, cz];
-    for (let i = 0; i < 4; i++) {
-      const a = base[i], c = base[(i + 1) % 4];
-      // normal kasar dari cross product
-      const ux = c[0] - a[0], uy = c[1] - a[1], uz = c[2] - a[2];
-      const vx = apex[0] - a[0], vy = apex[1] - a[1], vz = apex[2] - a[2];
-      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
-      const len = Math.hypot(nx, ny, nz) || 1;
-      nx /= len; ny /= len; nz /= len;
-      for (const p of [a, c, apex]) {
-        this.pos.push(p[0], p[1], p[2]);
-        this.nor.push(nx, ny, nz);
-        this.uv.push(0, 0);
-        this.col.push(r, g, b);
-      }
-      this.idx.push(this.v, this.v + 1, this.v + 2);
-      this.v += 3;
-    }
-  }
-  build(material) {
-    if (this.v === 0) return null;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    geo.setAttribute('normal', new THREE.Float32BufferAttribute(this.nor, 3));
-    geo.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
-    geo.setAttribute('color', new THREE.Float32BufferAttribute(this.col, 3));
-    geo.setIndex(this.idx);
-    const mesh = new THREE.Mesh(geo, material);
-    mesh.receiveShadow = true;
-    return mesh;
-  }
-}
 
-export class World {
-  constructor(scene) {
-    this.scene = scene;
-    this.colliders = [];   // {x0,z0,x1,z1}
-    this.beacon = null;
-    this.beaconRing = null;
-    this._buildLights();
-    this._buildGround();
-    this._buildBuildings();
-    this._buildStreetProps();
-    this._buildBeachPier();
-    this._buildBeacon();
-  }
-
-  _buildLights() {
-    // D6: malam terlalu gelap (gedung jadi balok hitam) — naikkan cahaya
-    // ambient + matahari supaya kota tetap terbaca di malam hari.
-    const hemi = new THREE.HemisphereLight(0x8a6fd0, 0x1a1410, 1.15);
-    this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(COLORS.sun, 2.0);
-    sun.position.set(-120, 160, -80);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.near = 10;
-    sun.shadow.camera.far = 420;
-    sun.shadow.camera.left = -70;
-    sun.shadow.camera.right = 70;
-    sun.shadow.camera.top = 70;
-    sun.shadow.camera.bottom = -70;
-    sun.shadow.bias = -0.0015;
-    this.sun = sun;
-    this.scene.add(sun);
-    this.scene.add(sun.target);
-  }
-
-  _buildGround() {
-    const groundMat = new THREE.MeshLambertMaterial({ color: COLORS.ground });
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(820, 820), groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.set(0, 0, 0);
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-    // Jalan (aspal) — strip vertikal + horizontal digabung.
-    const roadBucket = new MergeBucket();
-    for (const line of WORLD.roadLines) {
-      roadBucket.box(line, 0.06, 13, WORLD.roadWidth, 0.12, 396, 0xffffff, 1);
-      roadBucket.box(13, 0.06, line, 396, 0.12, WORLD.roadWidth, 0xffffff, 1);
-    }
-    const roadMat = new THREE.MeshLambertMaterial({ color: COLORS.road, vertexColors: true });
-    const roads = roadBucket.build(roadMat);
-    if (roads) { roads.castShadow = false; this.scene.add(roads); }
-    // Trotoar di kedua sisi tiap jalan.
-    const walkBucket = new MergeBucket();
-    for (const line of WORLD.roadLines) {
-      for (const off of [-10.5, 10.5]) {
-        walkBucket.box(line + off, 0.05, 13, 7, 0.1, 396, 0xffffff, 1);
-        walkBucket.box(13, 0.05, line + off, 396, 0.1, 7, 0xffffff, 1);
+    // Gedung acak per blok (di antara jalan). vx/vz = tepi-tepi strip jalan,
+    // jadi interval GENAP adalah blok, interval GANJIL adalah jalan itu sendiri.
+    var vx = [-210, -166, -154, -86, -74, -41, -29, -6, 6, 29, 41, 74, 86, 154, 166, 210];
+    var vz = [-210, -166, -154, -101, -89, -6, 74, 154, 210];
+    for (var bi = 0; bi < vx.length - 1; bi += 2) {
+      for (var bj = 0; bj < vz.length - 1; bj += 2) {
+        var x0 = vx[bi] + 4, x1 = vx[bi + 1] - 4;
+        var z0 = vz[bj] + 4, z1 = vz[bj + 1] - 4;
+        if (x1 - x0 < 14 || z1 - z0 < 14) continue;
+        if (z0 > 190) continue; // pantai selatan tetap kosong
+        var count = (x1 - x0) * (z1 - z0) > 900 ? 2 : 1;
+        for (var n = 0; n < count; n++) {
+          var w = rr(10, Math.min(22, x1 - x0 - 4));
+          var d = rr(10, Math.min(22, z1 - z0 - 4));
+          var x = rr(x0 + w / 2, x1 - w / 2);
+          var z = rr(z0 + d / 2, z1 - d / 2);
+          if (!clearOf(x, z, Math.max(w, d) / 2 + 2)) continue;
+          var h = rr(8, 30);
+          var col = pick(palette);
+          placed.push(addBuilding(x, z, w, d, h, col));
+        }
       }
     }
-    const walkMat = new THREE.MeshLambertMaterial({ color: COLORS.sidewalk, vertexColors: true });
-    const walks = walkBucket.build(walkMat);
-    if (walks) this.scene.add(walks);
-    // Marka jalan putus-putus (garis tengah).
-    const markBucket = new MergeBucket();
-    for (const line of WORLD.roadLines) {
-      for (let t = -175; t <= 175; t += 12) {
-        markBucket.box(line, 0.13, t, 0.5, 0.02, 5, 0xffffff, 1);
-        markBucket.box(t, 0.13, line, 5, 0.02, 0.5, 0xffffff, 1);
-      }
-    }
-    const markMat = new THREE.MeshBasicMaterial({ color: 0xd8d8d8, vertexColors: true });
-    const marks = markBucket.build(markMat);
-    if (marks) this.scene.add(marks);
-  }
 
-  _addCollider(cx, cz, w, d) {
-    this.colliders.push({ x0: cx - w / 2, x1: cx + w / 2, z0: cz - d / 2, z1: cz + d / 2 });
-  }
+    // Landmark: garasi (teal, atap neon hijau), bank (biru tua, kolom),
+    // rumah sakit (putih, salib merah di atap).
+    var garage = addBuilding(16, 120, 18, 14, 7, 0x2a6b5e);
+    placed.push(garage);
+    var bank = addBuilding(-58, -64, 22, 14, 16, 0x2c3e6b);
+    placed.push(bank);
+    var hospital = addBuilding(140, 140, 20, 18, 14, 0xd8d8e0);
+    placed.push(hospital);
 
-  _buildBuildings() {
-    const winTex = makeWindowTexture();
-    const facadeMat = new THREE.MeshLambertMaterial({ map: winTex, vertexColors: true });
-    const neonMat = new THREE.MeshBasicMaterial({ vertexColors: true });
-    const shopMat = new THREE.MeshBasicMaterial({ vertexColors: true });
-    const antennaBucket = new MergeBucket();
-    const tints = [0xffffff, 0xf2e8d8, 0xd8e2f2, 0xf2d8d8, 0xd8f2e2];
-    const neonCols = [0x00e5ff, 0xff2ea6, 0xffe14d, 0x7cff5e];
-    let tallest = null;
-    for (const bx of WORLD.blockCenters) {
-      for (const bz of WORLD.blockCenters) {
-        const isGarageBlock = (bx === 0 && bz === 140);
-        const isBankBlock = (bx === -70 && bz === -70);
-        const isHospBlock = (bx === 140 && bz === 140);
-        const bucket = new MergeBucket();
-        const neonBucket = new MergeBucket();
-        const shopBucket = new MergeBucket();
-        if (isGarageBlock || isBankBlock || isHospBlock) {
-          // Blok landmark: hanya gedung landmarknya (dibangun di bawah).
-        } else {
-          const r = rng(bx * 131 + bz * 57 + 7);
-          const n = 1 + Math.floor(r() * 2); // 1-2 gedung per blok
-          for (let i = 0; i < n; i++) {
-            const w = 16 + r() * 14;
-            const d = 14 + r() * 12;
-            const h = 8 + r() * 20;
-            const cx = bx + (r() - 0.5) * (WORLD.blockSize - w - 8);
-            const cz = bz + (r() - 0.5) * (WORLD.blockSize - d - 8);
-            const tint = tints[Math.floor(r() * tints.length)];
-            bucket.box(cx, h / 2, cz, w, h, d, tint, 8);
-            this._addCollider(cx, cz, w, d);
-            if (h > 18) {
-              bucket.box(cx, h + 1.5, cz, w * 0.45, 3, d * 0.45, tint, 8); // kotak atap
-            }
-            if (r() < 0.5) {
-              shopBucket.box(cx, 1.2, cz + d / 2 + 0.15, w * 0.8, 2.2, 0.3, neonCols[Math.floor(r() * 4)], 1);
-            }
-            if (r() < 0.45) {
-              const nc = neonCols[Math.floor(r() * 4)];
-              neonBucket.box(cx, h + 0.25, cz, w * 0.9, 0.5, 0.5, nc, 1);
-              neonBucket.box(cx, h + 0.25, cz, 0.5, 0.5, d * 0.9, nc, 1);
-            }
-            if (!tallest || h > tallest.h) tallest = { cx, cz, h };
+    placed.forEach(function (b) {
+      bodyGeoms.push(coloredBox(b.w, b.h, b.d, b.color, b.x, b.h / 2, b.z, 0));
+      // Atap: strip neon di tepi.
+      var nc = pick(neonCols);
+      neonGeoms.push(coloredBox(b.w + 0.4, 0.5, 0.8, nc, b.x, b.h + 0.25, b.z - b.d / 2, 0));
+      neonGeoms.push(coloredBox(b.w + 0.4, 0.5, 0.8, nc, b.x, b.h + 0.25, b.z + b.d / 2, 0));
+      // Jendela menyala di fasad selatan + timur + utara + barat.
+      var cols = Math.max(2, Math.floor(b.w / 3.4));
+      var rows = Math.max(1, Math.floor(b.h / 4.2));
+      var lit = 0xffd98a, dark = 0x2a2438;
+      for (var f = 0; f < 4; f++) {
+        for (var cx = 0; cx < cols; cx++) {
+          for (var ry = 0; ry < rows; ry++) {
+            var wx = b.x - b.w / 2 + (cx + 0.5) * (b.w / cols);
+            var wy = 2.2 + ry * 4.2;
+            var wz = b.z - b.d / 2 + (cx + 0.5) * (b.d / cols);
+            var on = rng() < 0.6;
+            var col = on ? lit : dark;
+            var off = 0.08;
+            if (f === 0) winGeoms.push(coloredBox(1.3, 1.7, 0.1, col, wx, wy, b.z + b.d / 2 + off, 0));
+            else if (f === 1) winGeoms.push(coloredBox(1.3, 1.7, 0.1, col, wx, wy, b.z - b.d / 2 - off, 0));
+            else if (f === 2) winGeoms.push(coloredBox(0.1, 1.7, 1.3, col, b.x + b.w / 2 + off, wy, wz, 0));
+            else winGeoms.push(coloredBox(0.1, 1.7, 1.3, col, b.x - b.w / 2 - off, wy, wz, 0));
           }
         }
-        const mesh = bucket.build(facadeMat);
-        if (mesh) { mesh.castShadow = true; this.scene.add(mesh); }
-        const neon = neonBucket.build(neonMat);
-        if (neon) this.scene.add(neon);
-        const shop = shopBucket.build(shopMat);
-        if (shop) this.scene.add(shop);
       }
-    }
-    // Antena di gedung tertinggi.
-    if (tallest) {
-      antennaBucket.box(tallest.cx, tallest.h + 5, tallest.cz, 0.5, 10, 0.5, 0x888888, 1);
-      const ant = antennaBucket.build(new THREE.MeshBasicMaterial({ vertexColors: true }));
-      if (ant) this.scene.add(ant);
-    }
-    this._buildLandmarks(facadeMat);
+    });
+
+    var lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
+    var basic = new THREE.MeshBasicMaterial({ vertexColors: true });
+    var cityMesh = new THREE.Mesh(mergeGeoms(bodyGeoms), lambert);
+    cityMesh.castShadow = true;
+    cityMesh.receiveShadow = true;
+    scene.add(cityMesh);
+    scene.add(new THREE.Mesh(mergeGeoms(winGeoms), basic));
+    scene.add(new THREE.Mesh(mergeGeoms(neonGeoms), basic));
+
+    // Salib merah di atap rumah sakit (landmark).
+    var crossGeoms = [
+      coloredBox(6, 1.2, 1.6, 0xff3b3b, 140, 15.2, 140, 0),
+      coloredBox(1.6, 1.2, 6, 0xff3b3b, 140, 15.2, 140, 0),
+    ];
+    scene.add(new THREE.Mesh(mergeGeoms(crossGeoms), basic));
+    // Papan BANK (kotak biru terang di fasad).
+    var signGeoms = [coloredBox(10, 2.4, 0.3, 0x5aa2ff, -58, 10, -56.8, 0)];
+    scene.add(new THREE.Mesh(mergeGeoms(signGeoms), basic));
   }
 
-  _buildLandmarks(facadeMat) {
-    // Garasi (markas) — papan emas.
-    const g = LANDMARKS.garage.building;
-    const gBucket = new MergeBucket();
-    gBucket.box(g.cx, g.h / 2, g.cz, g.w, g.h, g.d, 0xe8c25a, 8);
-    const gMesh = gBucket.build(facadeMat);
-    if (gMesh) { gMesh.castShadow = true; this.scene.add(gMesh); }
-    this._addCollider(g.cx, g.cz, g.w, g.d);
-    this._addSign('GARAGE', 0x1a1a1a, 0xffd76a, g.cx, g.h + 1.2, g.cz + g.d / 2 + 0.2, 16, 4);
-    // Bank — lebih tinggi, papan biru.
-    const b = LANDMARKS.bank.building;
-    const bBucket = new MergeBucket();
-    bBucket.box(b.cx, b.h / 2, b.cz, b.w, b.h, b.d, 0xd8e2f2, 8);
-    const bMesh = bBucket.build(facadeMat);
-    if (bMesh) { bMesh.castShadow = true; this.scene.add(bMesh); }
-    this._addCollider(b.cx, b.cz, b.w, b.d);
-    this._addSign('MERIDIAN BANK', 0xffffff, 0x1d4e9b, b.cx, b.h + 1.2, b.cz + b.d / 2 + 0.2, 20, 5);
-    // Rumah sakit — putih, salib merah.
-    const h = LANDMARKS.hospital.building;
-    const hBucket = new MergeBucket();
-    hBucket.box(h.cx, h.h / 2, h.cz, h.w, h.h, h.d, 0xf2f2f2, 8);
-    const hMesh = hBucket.build(facadeMat);
-    if (hMesh) { hMesh.castShadow = true; this.scene.add(hMesh); }
-    this._addCollider(h.cx, h.cz, h.w, h.d);
-    this._addSign('HOSPITAL', 0xcc2222, 0xffffff, h.cx, h.h + 1.2, h.cz + h.d / 2 + 0.2, 16, 4);
-  }
-
-  _addSign(text, fg, bg, x, y, z, w, h) {
-    const tex = makeSignTexture(text, '#' + fg.toString(16).padStart(6, '0'), '#' + bg.toString(16).padStart(6, '0'));
-    const mat = new THREE.MeshBasicMaterial({ map: tex });
-    const plane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), mat);
-    plane.position.set(x, y, z);
-    this.scene.add(plane);
-  }
-
-  _buildStreetProps() {
-    // Tiang lampu (digabung) + kepala lampu menyala (digabung).
-    const poleBucket = new MergeBucket();
-    const headBucket = new MergeBucket();
-    const r = rng(99);
-    for (const lx of WORLD.roadLines) {
-      for (const lz of WORLD.roadLines) {
-        if (r() < 0.4) continue;
-        const px = lx + 9, pz = lz + 9;
-        poleBucket.box(px, 3, pz, 0.35, 6, 0.35, 0x333333, 1);
-        headBucket.box(px, 6.1, pz, 1.1, 0.4, 0.5, 0xffe9a8, 1);
+  function buildStreetProps() {
+    var poleGeoms = [], lampGeoms = [], treeGeoms = [];
+    // Lampu jalan di sepanjang jalan, tiap ~32 m, selang-seling sisi.
+    var roads = [];
+    C.verticalRoads.forEach(function (x) { roads.push({ v: true, line: x }); });
+    C.horizontalRoads.forEach(function (z) { roads.push({ v: false, line: z }); });
+    roads.forEach(function (r, ri) {
+      for (var t = -190; t <= 190; t += 32) {
+        var off = (ri % 2 === 0 ? 7.5 : -7.5);
+        var px, pz;
+        if (r.v) { px = r.line + off; pz = t + (ri % 2) * 16; }
+        else { px = t + (ri % 2) * 16; pz = r.line + off; }
+        if (pz > 194 || Math.abs(px) > 205) continue;
+        poleGeoms.push(coloredCyl(0.09, 0.12, 6, 0x2a2a33, px, 3, pz, 6));
+        lampGeoms.push(coloredBox(0.7, 0.25, 0.7, 0xffe9b0, px, 6.1, pz, 0));
       }
+    });
+    // Pohon palem di pantai + beberapa blok.
+    for (var i = 0; i < 22; i++) {
+      var tx = rr(-200, 200);
+      var tz = i < 12 ? rr(186, 202) : rr(-190, 170);
+      if (Math.abs(tx) < 8 && Math.abs(tz - 120) < 30) continue;
+      treeGeoms.push(coloredCyl(0.18, 0.3, 5, 0x6b4a2a, tx, 2.5, tz, 6));
+      treeGeoms.push(coloredCyl(0.05, 2.2, 1.6, 0x2a7a3a, tx, 5.8, tz, 6));
+      treeGeoms.push(coloredBox(3.4, 0.3, 1.2, 0x2a7a3a, tx, 5.6, tz, rr(0, 3)));
     }
-    const poles = poleBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    if (poles) this.scene.add(poles);
-    const heads = headBucket.build(new THREE.MeshBasicMaterial({ vertexColors: true }));
-    if (heads) this.scene.add(heads);
-    // Palem di sepanjang pantai.
-    const trunkBucket = new MergeBucket();
-    const leafBucket = new MergeBucket();
-    for (let x = -180; x <= 180; x += 30) {
-      trunkBucket.box(x, 2.5, 190, 0.5, 5, 0.5, 0x8a6b45, 1);
-      leafBucket.pyramid(x, 5, 190, 5, 2.2, 0x2e8b57);
-    }
-    const trunks = trunkBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    if (trunks) this.scene.add(trunks);
-    const leaves = leafBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    if (leaves) this.scene.add(leaves);
+    var lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
+    var basic = new THREE.MeshBasicMaterial({ vertexColors: true });
+    scene.add(new THREE.Mesh(mergeGeoms(poleGeoms), lambert));
+    scene.add(new THREE.Mesh(mergeGeoms(lampGeoms), basic));
+    scene.add(new THREE.Mesh(mergeGeoms(treeGeoms), lambert));
   }
 
-  _buildBeachPier() {
-    // Pasir selatan.
-    const sand = new THREE.Mesh(
-      new THREE.PlaneGeometry(420, 30),
-      new THREE.MeshLambertMaterial({ color: COLORS.sand })
+  function buildPier() {
+    var geoms = [];
+    // Dek kayu dermaga (x 143..157, z 198..209).
+    geoms.push(coloredBox(14, 0.5, 12, 0x8a6a42, 150, 0.1, 203.5, 0));
+    for (var i = 0; i < 6; i++) {
+      geoms.push(coloredCyl(0.25, 0.25, 2.4, 0x5a4028, 144 + i * 2.4, -0.8, 200, 6));
+      geoms.push(coloredCyl(0.25, 0.25, 2.4, 0x5a4028, 144 + i * 2.4, -0.8, 208, 6));
+    }
+    // Tiang lampu dermaga.
+    geoms.push(coloredCyl(0.1, 0.12, 5, 0x2a2a33, 145, 2.5, 206, 6));
+    var lambert = new THREE.MeshLambertMaterial({ vertexColors: true });
+    scene.add(new THREE.Mesh(mergeGeoms(geoms), lambert));
+    var basic = new THREE.MeshBasicMaterial({ vertexColors: true });
+    scene.add(new THREE.Mesh(mergeGeoms([
+      coloredBox(0.7, 0.25, 0.7, 0xffe9b0, 145, 5.1, 206, 0),
+    ]), basic));
+  }
+
+  function buildBeacon() {
+    var geo = new THREE.CylinderGeometry(C.beaconTopR, C.beaconBottomR, C.beaconHeight, 16, 1, true);
+    var mat = new THREE.MeshBasicMaterial({
+      color: C.beaconColor,
+      transparent: true,
+      opacity: C.beaconOpacity,
+      blending: THREE.NormalBlending,
+      depthTest: false,
+      fog: false,
+      side: THREE.DoubleSide,
+    });
+    beacon = new THREE.Mesh(geo, mat);
+    beacon.position.set(C.pier.x, C.beaconHeight / 2, C.pier.z);
+    beacon.renderOrder = 999;
+    beacon.visible = true;
+    scene.add(beacon);
+  }
+
+  function build() {
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x2b1748);
+    scene.fog = new THREE.Fog(0x3a1f5c, 120, 520);
+
+    // Langit senja: kubah gradien.
+    var sky = new THREE.Mesh(
+      new THREE.SphereGeometry(760, 24, 16),
+      new THREE.MeshBasicMaterial({ map: makeSkyTexture(), side: THREE.BackSide, fog: false })
     );
-    sand.rotation.x = -Math.PI / 2;
-    sand.position.set(0, 0.08, 196);
-    sand.receiveShadow = true;
-    this.scene.add(sand);
-    // Laut.
-    const sea = new THREE.Mesh(
-      new THREE.PlaneGeometry(820, 220),
-      new THREE.MeshLambertMaterial({ color: COLORS.sea })
+    scene.add(sky);
+    // Matahari terbenam di barat.
+    var sun = new THREE.Mesh(
+      new THREE.CircleGeometry(34, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff7a2a, fog: false })
+    );
+    sun.position.set(-520, 70, -260);
+    sun.lookAt(0, 20, 0);
+    scene.add(sun);
+    var glow = new THREE.Mesh(
+      new THREE.CircleGeometry(70, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff9a4d, transparent: true, opacity: 0.25, fog: false })
+    );
+    glow.position.set(-522, 70, -262);
+    glow.lookAt(0, 20, 0);
+    scene.add(glow);
+
+    // Cahaya: hemisphere + matahari (bayangan 1024, area sempit).
+    var hemi = new THREE.HemisphereLight(0x8a5ac0, 0x1a1426, 1.05);
+    scene.add(hemi);
+    var sunLight = new THREE.DirectionalLight(0xffb37a, 1.9);
+    sunLight.position.set(120, 140, -80);
+    sunLight.castShadow = true;
+    sunLight.shadow.mapSize.set(1024, 1024);
+    sunLight.shadow.camera.left = -170;
+    sunLight.shadow.camera.right = 170;
+    sunLight.shadow.camera.top = 170;
+    sunLight.shadow.camera.bottom = -170;
+    sunLight.shadow.camera.far = 500;
+    scene.add(sunLight);
+    // Dua lampu titik di garasi + dermaga (suasana malam).
+    var p1 = new THREE.PointLight(0xffb300, 0.7, 40);
+    p1.position.set(0, 8, 120);
+    scene.add(p1);
+    var p2 = new THREE.PointLight(0x5aa2ff, 0.6, 36);
+    p2.position.set(150, 8, 196);
+    scene.add(p2);
+
+    // Tanah (tekstur canvas) + laut.
+    var ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(420, 416),
+      new THREE.MeshLambertMaterial({ map: makeGroundTexture() })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(0, 0, -2);
+    ground.receiveShadow = true;
+    scene.add(ground);
+    var sea = new THREE.Mesh(
+      new THREE.PlaneGeometry(1400, 700),
+      new THREE.MeshLambertMaterial({ color: 0x14406e })
     );
     sea.rotation.x = -Math.PI / 2;
-    sea.position.set(0, 0.05, 318);
-    this.scene.add(sea);
-    // Dermaga kayu di x=150, dari pantai ke laut.
-    const pierBucket = new MergeBucket();
-    for (let z = 178; z <= 210; z += 4) {
-      pierBucket.box(150, 0.35, z, 9, 0.5, 3.6, 0x9a7b4f, 1);
+    sea.position.set(0, -0.35, 206 + 350);
+    scene.add(sea);
+
+    buildCity();
+    buildStreetProps();
+    buildPier();
+    buildBeacon();
+  }
+
+  // ---- Tabrakan ----
+  function blockedAt(x, z, radius) {
+    var r = radius || 0.5;
+    if (x < -C.worldHalf + r || x > C.worldHalf - r) return true;
+    if (z < -C.worldHalf + r || z > C.pierZ + r) return true;
+    if (z > C.seaZ) {
+      // Di laut: hanya koridor dermaga yang boleh.
+      if (x < C.pierX0 || x > C.pierX1) return true;
     }
-    for (const dz of [180, 196, 210]) {
-      pierBucket.box(146, 0.1, dz, 0.5, 1.2, 0.5, 0x6b4f2a, 1);
-      pierBucket.box(154, 0.1, dz, 0.5, 1.2, 0.5, 0x6b4f2a, 1);
+    for (var i = 0; i < buildings.length; i++) {
+      var b = buildings[i];
+      if (x + r > b.minX && x - r < b.maxX && z + r > b.minZ && z - r < b.maxZ) return true;
     }
-    const pier = pierBucket.build(new THREE.MeshLambertMaterial({ vertexColors: true }));
-    if (pier) { pier.castShadow = true; this.scene.add(pier); }
+    return false;
   }
 
-  _buildBeacon() {
-    // D1: suar objective WAJIB terlihat dari seberang kota — dulu kolomnya
-    // tipis (radius ~2) dan redup (opacity 0,35) sehingga pemain tidak
-    // pernah melihatnya. Ronde 1 menebalkannya (radius 4,2/5,6, tinggi 120)
-    // tapi review Chrome ronde 2 tetap tidak melihat sorotan vertikal dari
-    // spawn: kolom 120 m tertutup gedung blok (70,140) dan puncaknya keluar
-    // dari frame (FOV 62°, kamera rendah) — yang terlihat cuma strip neon
-    // atap gedung. RONDE 2: kolom JAUH lebih tinggi (260 m, menembus langit
-    // di atas atap mana pun) + lebih lebar + depthTest:false supaya terlihat
-    // MENEMBUS gedung — suar penunjuk objective memang harus terlihat dari
-    // mana saja, seperti quest marker. Fade saat mendekat tetap dipertahankan
-    // supaya tidak menutupi adegan di sekitar target.
-    // RONDE 3: blending ADITIF ternyata memucatkan warna — diukur di Pages
-    // live, puncak kolom = RGB (255,255,200), nyaris putih, BUKAN emas.
-    // Additive menambahkan warna emas ke langit senja yang terang sehingga
-    // jenuh ke putih ("krem pucat"). Sekarang blending NORMAL + warna emas
-    // pekat 0xffb300: kolom tampil sebagai emas solid apa pun latarnya.
-    const geo = new THREE.CylinderGeometry(7, 9, 260, 12, 1, true);
-    const mat = new THREE.MeshBasicMaterial({
-      color: 0xffb300, transparent: true, opacity: 0.85, fog: false,
-      blending: THREE.NormalBlending, side: THREE.DoubleSide, depthWrite: false,
-      depthTest: false,
-    });
-    this.beacon = new THREE.Mesh(geo, mat);
-    this.beacon.position.set(0, 130, 0);
-    this.beacon.visible = false;
-    this.beacon.renderOrder = 999;
-    this.scene.add(this.beacon);
-    const ringGeo = new THREE.RingGeometry(4.5, 6.5, 32);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffd76a, transparent: true, opacity: 0.9, side: THREE.DoubleSide, fog: false,
-    });
-    this.beaconRing = new THREE.Mesh(ringGeo, ringMat);
-    this.beaconRing.rotation.x = -Math.PI / 2;
-    this.beaconRing.position.set(0, 0.2, 0);
-    this.beaconRing.visible = false;
-    this.scene.add(this.beaconRing);
+  // Gerak dengan geser di dinding (sumbu dipisah): kembalikan posisi baru.
+  function slideMove(x, z, dx, dz, radius) {
+    var nx = x, nz = z;
+    if (dx !== 0 && !blockedAt(x + dx, z, radius)) nx = x + dx;
+    if (dz !== 0 && !blockedAt(nx, z + dz, radius)) nz = z + dz;
+    // Jepit ke darat (jangan sampai lolos karena pembulatan).
+    if (nz > C.seaZ && (nx < C.pierX0 || nx > C.pierX1)) nz = C.seaZ;
+    if (nz > C.pierZ) nz = C.pierZ;
+    nx = Math.max(-C.worldHalf + 0.5, Math.min(C.worldHalf - 0.5, nx));
+    nz = Math.max(-C.worldHalf + 0.5, Math.min(C.pierZ, nz));
+    return { x: nx, z: nz };
   }
 
-  setBeacon(x, z, on) {
-    if (!this.beacon) return;
-    this.beacon.visible = on;
-    this.beaconRing.visible = on;
-    if (on) {
-      this.beacon.position.set(x, 130, z);
-      this.beaconRing.position.set(x, 0.2, z);
-    }
-  }
-
-  // D2: tepi laut — dinding tak terlihat. Koridor dermaga (x 143..157)
-  // boleh sampai ujung dermaga (z 209), selebihnya pasir berakhir di z 206.
-  clampShore(x, z) {
-    const maxZ = (x > WORLD.pierX0 && x < WORLD.pierX1) ? WORLD.pierMaxZ : WORLD.shoreMaxZ;
-    return z > maxZ ? maxZ : z;
-  }
-
-  // Pindahkan kamera bayangan mengikuti pemain (area sempit = murah).
-  followShadow(px, pz) {
-    if (!this.sun) return;
-    this.sun.position.set(px - 120, 160, pz - 80);
-    this.sun.target.position.set(px, 0, pz);
-    this.sun.target.updateMatrixWorld();
-  }
-
-  update(dt, t, px, pz) {
-    if (this.beacon && this.beacon.visible) {
-      // Suar memudar saat KAMERA mendekat (px/pz = posisi kamera, dioper
-      // dari _render). RONDE 3: fade lama memakai jarak PEMAIN + lantai
-      // 0,18 — saat pemain berdiri 8 m dari beacon, kameranya bisa berada
-      // DI DALAM kolom (jarak 2,6 m dari sumbu, radius kolom 7–9 m) dan
-      // dinding emas solid menutupi SELURUH layar (shot 2 JOB 5: langit,
-      // laut, dan dermaga semuanya tercuci emas; thugs nyaris tak terlihat).
-      // Sekarang: kamera ≤12 m dari sumbu -> opacity 0 (kolom hilang total,
-      // cincin tanah tetap menandai target), ≥47 m -> penuh. Dari spawn
-      // (~170 m) suar tetap emas pekat dan jelas.
-      const d = (px === undefined) ? 999
-        : Math.hypot(px - this.beacon.position.x, pz - this.beacon.position.z);
-      const fade = Math.min(1, Math.max(0, (d - 12) / 35));
-      this.beacon.material.opacity = (0.7 + 0.15 * Math.sin(t * 3)) * fade;
-      const s = 1 + 0.08 * Math.sin(t * 3);
-      this.beaconRing.scale.set(s, s, 1);
-    }
-  }
-
-  // Dorong lingkaran (x,z,r) keluar dari semua AABB; kembalikan posisi baru.
-  resolveCollision(x, z, r) {
-    for (const c of this.colliders) {
-      const nx = Math.max(c.x0, Math.min(x, c.x1));
-      const nz = Math.max(c.z0, Math.min(z, c.z1));
-      const dx = x - nx, dz = z - nz;
-      const d2 = dx * dx + dz * dz;
-      if (d2 < r * r) {
-        if (d2 > 0.0001) {
-          const d = Math.sqrt(d2);
-          x = nx + (dx / d) * r;
-          z = nz + (dz / d) * r;
-        } else {
-          // Tepat di dalam kotak: dorong ke sisi terdekat.
-          const dl = x - c.x0, dr = c.x1 - x, dn = z - c.z0, df = c.z1 - z;
-          const m = Math.min(dl, dr, dn, df);
-          if (m === dl) x = c.x0 - r;
-          else if (m === dr) x = c.x1 + r;
-          else if (m === dn) z = c.z0 - r;
-          else z = c.z1 + r;
-        }
-      }
-    }
-    return { x, z };
-  }
-}
+  window.NBWorld = {
+    scene: null,
+    beacon: null,
+    buildings: buildings,
+    build: function () {
+      build();
+      this.scene = scene;
+      this.beacon = beacon;
+    },
+    isBlocked: blockedAt,
+    slideMove: slideMove,
+    setObjective: function (x, z) {
+      if (x === null || x === undefined) { beacon.visible = false; return; }
+      beacon.visible = true;
+      beacon.position.set(x, C.beaconHeight / 2, z);
+    },
+    // Fade beacon berdasar jarak KAMERA ke tiang (0 <=12 m, penuh >=47 m).
+    updateBeaconFade: function (camX, camZ) {
+      if (!beacon || !beacon.visible) return;
+      var d = Math.hypot(camX - beacon.position.x, camZ - beacon.position.z);
+      var t = (d - C.beaconFadeNear) / (C.beaconFadeFar - C.beaconFadeNear);
+      t = Math.max(0, Math.min(1, t));
+      beacon.material.opacity = C.beaconOpacity * t;
+    },
+    objectivePos: function () {
+      return beacon ? { x: beacon.position.x, z: beacon.position.z } : { x: C.pier.x, z: C.pier.z };
+    },
+  };
+})();

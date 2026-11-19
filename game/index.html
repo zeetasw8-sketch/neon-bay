@@ -1,120 +1,115 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" href="data:,">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Neon Bay — open-world crime</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="app"></div>
+<canvas id="game-canvas"></canvas>
 
-<!-- HUD -->
-<div id="hud">
+<!-- ===== HUD (selalu di atas canvas) ===== -->
+<div id="hud" class="hidden">
   <div id="missionBox">
-    <div id="missionTitle">NEON BAY</div>
-    <div id="missionText">Welcome to Neon Bay.</div>
-    <div id="missionTimer"></div>
+    <div id="missionTitle">JOB 1: FIRST PICKUP</div>
+    <div id="missionText">Pergi ke dermaga selatan</div>
+    <div id="timer" class="hidden">100</div>
   </div>
-  <div id="toast"></div>
-  <div id="objGuide"><span id="objArrow">▲</span><span id="objDist"></span></div>
-  <div id="mapLegend">
-    <div><i class="lg-you">▲</i> You / your car</div>
-    <div><i class="lg-obj"></i> Objective</div>
-    <div><i class="lg-bank"></i> Bank</div>
-    <div><i class="lg-garage"></i> Garage</div>
-    <div><i class="lg-hosp">+</i> Hospital</div>
-    <div><i class="lg-car"></i> Traffic</div>
-    <div><i class="lg-cop"></i> Police</div>
+  <div id="objGuide">
+    <span id="objArrow">&#9650;</span>
+    <span id="objDist">168 m</span>
   </div>
   <div id="topRight">
     <div id="money">$0</div>
+    <div id="stars"></div>
     <div id="healthBar"><div id="healthFill"></div></div>
-    <div id="healthText">HEALTH 100</div>
-    <div id="stars">☆☆☆☆☆</div>
   </div>
-  <div id="speedo"><span id="speedVal">0 mph</span></div>
+  <div id="speed" class="hidden"><span id="speedVal">0</span> mph</div>
+  <div id="crosshair" class="hidden">+</div>
   <canvas id="minimap" width="168" height="168"></canvas>
-  <div id="crosshair">+</div>
-  <div id="prompt"></div>
-  <div id="controlsHint">WASD move/drive · E enter car · F punch · CLICK shoot · SHIFT sprint · SPACE handbrake · P pause · M mute</div>
-  <div id="banner"><div id="bannerTitle"></div><div id="bannerSub"></div></div>
-  <div id="damageFlash"></div>
-  <button id="muteBtn">🔊 SOUND</button>
+  <div id="mapLegend">
+    <span><i class="lg gold">&#9650;</i> You</span>
+    <span><i class="lg white">&#9679;</i> Objective</span>
+    <span><i class="lg blue">&#9632;</i> Bank</span>
+    <span><i class="lg red">+</i> Hospital</span>
+    <span><i class="lg home">&#8962;</i> Garage</span>
+  </div>
+  <div id="prompt" class="hidden"></div>
+  <div id="controlsHint">WASD move &middot; E car &middot; F punch &middot; Click shoot &middot; SHIFT sprint &middot; SPACE handbrake &middot; P pause &middot; R retry &middot; M mute</div>
+  <div id="toast" class="hidden"></div>
+  <div id="banner" class="hidden"><div id="bannerTitle"></div><div id="bannerSub"></div></div>
 </div>
+<div id="damageFlash"></div>
 
-<!-- Menu utama -->
-<div id="menu" class="overlay">
-  <div class="panel">
+<!-- ===== Menu utama ===== -->
+<div id="menu">
+  <div class="menu-inner">
     <h1>NEON BAY</h1>
-    <p class="tagline">Six jobs. One city. No way out but through.</p>
-    <p id="menuStory">You are Dex Marlowe, a driver fresh out of a bad deal in Neon Bay — a
-    purple-dusk port city of five-by-five blocks, a beach, and a police force that never
-    sleeps. Every car in this city belongs to someone else — taking one raises your
-    wanted level. Mara Voss has six jobs for you. Finish them all and the city is yours.</p>
-    <div class="menuButtons">
-      <button id="startBtn" class="big startBtn">▶ START NEW GAME</button>
-      <button id="btnStart" class="big" style="display:none">START</button>
-      <button id="playGame" class="big" style="display:none">PLAY</button>
-      <button id="continueBtn" class="big">CONTINUE</button>
-      <button id="howBtn" class="big">HOW TO PLAY</button>
+    <p class="tagline">An open-world crime game. Sunset over the bay, six jobs, one fixer, and the Bay PD on your tail.</p>
+    <p class="story">You are <b>Dex Marlowe</b>, a wheelman with a teal jacket and a pink starter car. <b>Mara Voss</b> has six jobs for you — from a first pickup at the south pier to the big bank job. Steal cars, lose the heat, fight at the docks, and get out clean.</p>
+    <div class="menu-buttons">
+      <button id="btnStart">START</button>
+      <button id="btnContinue">CONTINUE</button>
+      <button id="btnHow">HOW TO PLAY</button>
+      <button id="btnSound">SOUND: ON</button>
     </div>
-    <div id="howBox">
-      <p><b>WASD</b> — walk / drive &nbsp;·&nbsp; <b>SHIFT</b> — sprint &nbsp;·&nbsp; <b>SPACE</b> — handbrake</p>
-      <p><b>E</b> — enter / exit car (stealing a car raises your wanted level)</p>
-      <p><b>F</b> — punch &nbsp;·&nbsp; <b>CLICK</b> — shoot (only with a pistol)</p>
-      <p>Drag mouse to look around, wheel to zoom the camera.</p>
-      <p><b>P / ESC</b> — pause &nbsp;·&nbsp; <b>R</b> — retry a failed job &nbsp;·&nbsp; <b>M</b> — mute</p>
-      <p>Follow the gold beacon. The ▲ arrow at the top of the screen points
-      to your objective, with the distance in meters. Lose the cops by getting more than 45 m away from
-      every patrol car — your wanted level drops one star every 20 seconds.</p>
-      <p><b>Minimap:</b> ▲ yellow = you / your car · ○ white = objective · ■ blue = bank · ■ gold = garage · ✚ hospital · grey = traffic · red/blue = police.</p>
-      <p>WASTED or BUSTED costs a $150 fine. Your progress saves after every job.</p>
-      <button id="howCloseBtn">CLOSE</button>
-    </div>
-    <p class="fine">A fan-made open-world crime game. Not affiliated with any commercial game.</p>
+    <p class="foot">A completely original game. No real city, no real people, no borrowed art, music or names.</p>
   </div>
 </div>
 
-<!-- Pause -->
-<div id="pauseMenu" class="overlay" style="display:none">
+<!-- ===== How to play ===== -->
+<div id="howBox" class="hidden">
+  <div class="panel">
+    <h2>HOW TO PLAY</h2>
+    <p><b>Goal:</b> finish all 6 jobs for Mara Voss, then roam free. Each job pays cash.</p>
+    <p><b>Move:</b> WASD — walk and drive. <b>E</b> enter / exit a car (entering a car is stealing: +1 wanted star). <b>F</b> punch. <b>Mouse click</b> shoot once you have the pistol. <b>SHIFT</b> sprint. <b>SPACE</b> handbrake. <b>R</b> retry the current job. <b>P</b> or <b>ESC</b> pause. <b>M</b> mute.</p>
+    <p><b>Camera:</b> drag the mouse to look around; the wheel zooms. The camera follows you and swings back behind you as you move.</p>
+    <p><b>Wanted:</b> stars rise when you steal a car, punch a pedestrian, or hit one with a car. One police car hunts you per star. Police bust you if one stays within 5 m while you move slower than 3 m/s for 2 seconds. To lose the heat, get more than 45 m away from every police car and stay clean — stars fade one per 20 seconds.</p>
+    <p><b>Minimap:</b> the round map shows the city, the sea to the south, your garage (home), the bank, the hospital, traffic and police. The white dot with a gold ring is your objective; the gold arrow and the distance above the map point at it too. The gold beam in the sky marks the objective from anywhere in the city.</p>
+    <p><b>Health:</b> you heal fully at the start of every job. If you are wasted you pay a $150 fine and wake up at the hospital. If you are busted you pay the same fine and the job restarts.</p>
+    <p><b>Save:</b> your cash and job are saved automatically. CONTINUE resumes them.</p>
+    <button id="btnCloseHow">CLOSE</button>
+  </div>
+</div>
+
+<!-- ===== Pause ===== -->
+<div id="pauseMenu" class="hidden">
   <div class="panel">
     <h2>PAUSED</h2>
-    <div class="menuButtons">
-      <button id="resumeBtn" class="big">RESUME</button>
-      <button id="btnResume" class="big" style="display:none">RESUME</button>
-      <button id="restartBtn" class="big">RESTART JOB</button>
-      <button id="saveQuitBtn" class="big">SAVE &amp; QUIT TO MENU</button>
+    <div class="menu-buttons">
+      <button id="btnResume">RESUME</button>
+      <button id="restartBtn">RESTART JOB</button>
+      <button id="btnPauseSound">SOUND: ON</button>
+      <button id="btnQuit">SAVE &amp; QUIT TO MENU</button>
     </div>
   </div>
 </div>
 
-<!-- Wasted -->
-<div id="deadScreen" class="overlay" style="display:none">
-  <div class="panel">
-    <h2 class="red">WASTED</h2>
-    <p id="deadText"></p>
-    <p>You wake up at St. Mercy Hospital, patched up and lighter by a fine.</p>
-    <div class="menuButtons">
-      <button id="deadOkBtn" class="big">RESPAWN AT HOSPITAL</button>
-    </div>
-  </div>
+<!-- ===== WASTED / BUSTED ===== -->
+<div id="wasted" class="hidden">
+  <div class="big-death">WASTED</div>
+  <p id="wastedFine">Bay PD fined you $150</p>
+  <button id="wastedContinue">CONTINUE</button>
 </div>
-
-<!-- Busted -->
-<div id="bustedScreen" class="overlay" style="display:none">
-  <div class="panel">
-    <h2 class="red">BUSTED</h2>
-    <p id="bustedText"></p>
-    <p>Bay PD lets you go — minus the fine, and minus your ride.</p>
-    <div class="menuButtons">
-      <button id="bustedOkBtn" class="big">RESPAWN AT HOSPITAL</button>
-    </div>
-  </div>
+<div id="busted" class="hidden">
+  <div class="big-death">BUSTED</div>
+  <p id="bustedFine">Bay PD fined you $150</p>
+  <button id="bustedContinue">CONTINUE</button>
 </div>
 
 <script src="vendor/three.min.js"></script>
-<script type="module" src="src/main.js"></script>
+<script src="src/config.js"></script>
+<script src="src/input.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/world.js"></script>
+<script src="src/vehicles.js"></script>
+<script src="src/people.js"></script>
+<script src="src/police.js"></script>
+<script src="src/combat.js"></script>
+<script src="src/missions.js"></script>
+<script src="src/hud.js"></script>
+<script src="src/main.js"></script>
 </body>
 </html>

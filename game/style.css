@@ -1,116 +1,87 @@
-/* Neon Bay — HUD + menu (v3, dari nol). Tema senja ungu/neon. */
+/* Neon Bay — purple dusk, neon gold. HUD teks saja, tanpa kotak latar di video. */
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #2a1a3e;
-  font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #fff; }
-#app, #app canvas { position: fixed; inset: 0; display: block; }
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #1a0f2e; }
+body { font-family: 'Segoe UI', Arial, sans-serif; color: #f2e9ff; }
+#game-canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.hidden { display: none !important; }
+button { cursor: pointer; font-family: inherit; }
 
-/* Kotak misi: kiri atas */
-#missionBox { position: absolute; top: 14px; left: 14px; max-width: 380px;
-  background: rgba(10, 8, 20, 0.72); border-left: 4px solid #ffd76a;
-  padding: 10px 14px; border-radius: 4px; }
-#missionTitle { font-size: 15px; font-weight: 800; letter-spacing: 1px; color: #ffd76a; }
-#missionText { font-size: 13px; line-height: 1.45; margin-top: 3px; color: #eee; }
-#missionTimer { font-size: 20px; font-weight: 800; color: #ff5a5a; margin-top: 4px; }
-
-/* Toast: tengah atas, di bawah kotak misi — dipakai untuk label screenshot */
-#toast { position: absolute; top: 110px; left: 50%; transform: translateX(-50%);
-  display: none; background: rgba(10, 8, 20, 0.78); border: 1px solid #ffd76a;
-  color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.5px;
-  padding: 8px 16px; border-radius: 4px; white-space: nowrap; }
-
-/* Penunjuk objective (D1): panah arah + jarak, tengah atas di bawah toast */
-#objGuide { position: absolute; top: 152px; left: 50%; transform: translateX(-50%);
-  display: none; background: rgba(10, 8, 20, 0.78); border: 1px solid #ffd76a;
-  color: #ffd76a; font-size: 16px; font-weight: 800; letter-spacing: 0.5px;
-  padding: 6px 14px; border-radius: 4px; white-space: nowrap; }
-#objArrow { display: inline-block; margin-right: 8px; }
-#objDist { color: #fff; }
-
-/* Legenda minimap (D8): di kiri minimap, kanan bawah */
-#mapLegend { position: absolute; right: 196px; bottom: 14px; font-size: 11px;
-  line-height: 1.75; color: #ddd; background: rgba(10, 8, 20, 0.6);
-  padding: 8px 10px; border-radius: 4px; text-align: left; white-space: nowrap; }
-#mapLegend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px;
-  font-style: normal; text-align: center; line-height: 10px; font-size: 10px; }
-#mapLegend .lg-you { color: #ffe14d; }
-#mapLegend .lg-obj { background: #fff; border-radius: 50%; }
-#mapLegend .lg-bank { background: #4d8fd2; }
-#mapLegend .lg-garage { background: #ffd76a; }
-#mapLegend .lg-hosp { background: #fff; color: #cc2222; font-weight: 900; }
-#mapLegend .lg-car { background: #9aa0ad; }
-#mapLegend .lg-cop { background: #ff2222; }
-
-/* Kanan atas: uang, nyawa, bintang */
+/* ---------- HUD ---------- */
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+#hud button { pointer-events: auto; }
+#missionBox { position: absolute; top: 14px; left: 14px; background: rgba(20, 8, 40, 0.72);
+  border-left: 4px solid #ffb300; border-radius: 6px; padding: 10px 14px; min-width: 250px; }
+#missionTitle { font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #ffb300; }
+#missionText { font-size: 13px; color: #e8dcff; margin-top: 3px; }
+#timer { font-size: 22px; font-weight: 800; color: #ff5a5a; margin-top: 4px; }
+#objGuide { position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px; font-size: 20px; font-weight: 800; color: #fff;
+  text-shadow: 0 0 6px #000, 0 2px 3px #000; }
+#objArrow { display: inline-block; color: #ffb300; font-size: 22px; }
 #topRight { position: absolute; top: 14px; right: 14px; text-align: right; }
-#money { font-size: 26px; font-weight: 800; color: #7dff9a;
-  text-shadow: 0 2px 6px rgba(0,0,0,0.7); }
-#healthBar { width: 190px; height: 12px; background: rgba(0,0,0,0.6);
-  border: 1px solid #fff3; border-radius: 6px; margin-top: 6px; overflow: hidden; }
-#healthFill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff5a5a, #ff8a5a);
-  transition: width 0.2s; }
-#healthText { font-size: 11px; letter-spacing: 1px; color: #ddd; margin-top: 3px; }
-#stars { font-size: 24px; letter-spacing: 3px; color: #ffd76a; margin-top: 4px;
-  text-shadow: 0 0 8px rgba(255, 215, 106, 0.5); }
-#stars.hot { color: #ff4444; animation: starpulse 0.8s infinite alternate; }
-@keyframes starpulse { from { opacity: 1; } to { opacity: 0.6; } }
-
-/* Speedometer: kanan bawah, di atas minimap */
-#speedo { position: absolute; right: 14px; bottom: 196px; display: none;
-  background: rgba(10, 8, 20, 0.72); padding: 6px 12px; border-radius: 4px;
-  font-size: 22px; font-weight: 800; color: #fff; }
-#minimap { position: absolute; right: 14px; bottom: 14px; width: 168px; height: 168px;
-  border-radius: 50%; border: 2px solid #ffd76a88; background: #232833; }
-
-/* Crosshair, prompt, hint */
+#money { font-size: 22px; font-weight: 800; color: #7dff9a; text-shadow: 0 0 6px #000; }
+#stars { font-size: 22px; letter-spacing: 3px; color: #ffb300; text-shadow: 0 0 6px #000; min-height: 28px; }
+#healthBar { width: 190px; height: 12px; background: rgba(0, 0, 0, 0.55); border: 1px solid #888;
+  border-radius: 6px; margin-top: 4px; overflow: hidden; }
+#healthFill { height: 100%; width: 100%; background: linear-gradient(90deg, #37d67a, #7dff9a); }
+#speed { position: absolute; right: 200px; bottom: 24px; font-size: 20px; font-weight: 800;
+  color: #fff; text-shadow: 0 0 6px #000; }
 #crosshair { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-  display: none; font-size: 28px; font-weight: 700; color: #fff;
-  text-shadow: 0 0 4px #000, 0 0 2px #000; }
-#prompt { position: absolute; left: 50%; bottom: 120px; transform: translateX(-50%);
-  display: none; background: rgba(10, 8, 20, 0.8); padding: 8px 16px; border-radius: 4px;
-  font-size: 15px; font-weight: 600; }
-#controlsHint { position: absolute; left: 14px; bottom: 12px; font-size: 11px; color: #bbb;
-  background: rgba(10, 8, 20, 0.55); padding: 5px 9px; border-radius: 4px; }
+  font-size: 26px; font-weight: 900; color: #fff; text-shadow: 0 0 4px #000; }
+#minimap { position: absolute; right: 14px; bottom: 14px; width: 168px; height: 168px;
+  border-radius: 50%; border: 3px solid rgba(255, 179, 0, 0.85); background: #101024;
+  box-shadow: 0 0 14px rgba(0, 0, 0, 0.7); }
+#mapLegend { position: absolute; right: 190px; bottom: 16px; font-size: 12px; line-height: 1.7;
+  color: #e8dcff; text-shadow: 0 1px 3px #000; text-align: left; }
+#mapLegend .lg { font-style: normal; display: inline-block; width: 14px; text-align: center; }
+#mapLegend .gold { color: #ffb300; } #mapLegend .white { color: #fff; }
+#mapLegend .blue { color: #5aa2ff; } #mapLegend .red { color: #ff5a5a; }
+#mapLegend .home { color: #7dff9a; }
+#prompt { position: absolute; left: 50%; bottom: 110px; transform: translateX(-50%);
+  background: rgba(20, 8, 40, 0.8); border: 1px solid #ffb300; border-radius: 6px;
+  padding: 8px 16px; font-size: 15px; font-weight: 700; color: #ffe9b0; white-space: nowrap; }
+#controlsHint { position: absolute; left: 14px; bottom: 14px; font-size: 12px; color: #cfc0e8;
+  text-shadow: 0 1px 3px #000; }
+#toast { position: absolute; top: 110px; left: 50%; transform: translateX(-50%);
+  background: rgba(20, 8, 40, 0.85); border: 1px solid #ffb300; border-radius: 8px;
+  padding: 10px 22px; font-size: 18px; font-weight: 800; letter-spacing: 1px; color: #ffe9b0;
+  text-align: center; max-width: 80%; }
+#banner { position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%); text-align: center; }
+#bannerTitle { font-size: 44px; font-weight: 900; letter-spacing: 4px; color: #ffb300;
+  text-shadow: 0 0 18px rgba(255, 179, 0, 0.7), 0 3px 6px #000; }
+#bannerSub { font-size: 18px; color: #fff; text-shadow: 0 2px 4px #000; margin-top: 6px; }
+#damageFlash { position: fixed; inset: 0; pointer-events: none; z-index: 9;
+  background: radial-gradient(ellipse at center, rgba(255, 0, 0, 0) 40%, rgba(255, 0, 0, 0.45) 100%);
+  opacity: 0; }
 
-/* Banner tengah */
-#banner { position: absolute; left: 50%; top: 32%; transform: translate(-50%, -50%);
-  display: none; text-align: center; }
-#bannerTitle { font-size: 44px; font-weight: 900; letter-spacing: 3px; color: #ffd76a;
-  text-shadow: 0 0 18px rgba(255, 215, 106, 0.6), 0 3px 0 #000; }
-#bannerSub { font-size: 18px; font-weight: 600; margin-top: 6px;
-  text-shadow: 0 2px 4px #000; }
+/* ---------- Menu / panel / death ---------- */
+#menu, #pauseMenu, #howBox, #wasted, #busted { position: fixed; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(12, 4, 28, 0.55); }
+#menu { background: linear-gradient(180deg, rgba(26, 10, 50, 0.25) 0%, rgba(12, 4, 28, 0.72) 100%); }
+.menu-inner { max-width: 620px; text-align: center; padding: 30px; }
+.menu-inner h1 { font-size: 64px; font-weight: 900; letter-spacing: 8px; color: #ffb300;
+  text-shadow: 0 0 30px rgba(255, 179, 0, 0.6), 0 4px 8px #000; }
+.tagline { font-size: 16px; color: #e8dcff; margin-top: 8px; }
+.story { font-size: 14px; color: #cfc0e8; margin-top: 14px; line-height: 1.6; }
+.menu-buttons { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.menu-buttons button, #wastedContinue, #bustedContinue, #btnCloseHow {
+  min-width: 260px; padding: 12px 26px; font-size: 17px; font-weight: 800; letter-spacing: 2px;
+  color: #1a0f2e; background: #ffb300; border: none; border-radius: 8px; }
+.menu-buttons button:hover, #wastedContinue:hover, #bustedContinue:hover, #btnCloseHow:hover { background: #ffc93c; }
+.foot { font-size: 12px; color: #9d8cc0; margin-top: 20px; }
+.panel { max-width: 640px; max-height: 86vh; overflow-y: auto; background: rgba(20, 8, 40, 0.95);
+  border: 1px solid #ffb300; border-radius: 12px; padding: 26px 30px; text-align: left; }
+.panel h2 { color: #ffb300; letter-spacing: 3px; margin-bottom: 12px; text-align: center; }
+.panel p { font-size: 14px; line-height: 1.65; color: #e8dcff; margin-bottom: 10px; }
+#btnCloseHow { display: block; margin: 14px auto 0; }
+.big-death { font-size: 72px; font-weight: 900; letter-spacing: 10px; color: #ff3b3b;
+  text-shadow: 0 0 30px rgba(255, 0, 0, 0.6), 0 4px 8px #000; }
+#wasted, #busted { flex-direction: column; background: rgba(20, 0, 0, 0.6); }
+#wastedFine, #bustedFine { font-size: 18px; color: #fff; margin: 14px 0 22px; text-shadow: 0 2px 4px #000; }
 
-/* Flash damage: merah, maksimal 3x/detik (diatur di JS) */
-#damageFlash { position: fixed; inset: 0; background: #ff0000; opacity: 0;
-  pointer-events: none; transition: opacity 0.15s; }
-
-/* Tombol suara */
-#muteBtn { position: absolute; left: 14px; bottom: 48px; pointer-events: auto;
-  background: rgba(10, 8, 20, 0.72); color: #fff; border: 1px solid #fff3;
-  padding: 6px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
-
-/* Overlay menu */
-.overlay { position: fixed; inset: 0; z-index: 10; display: flex;
-  align-items: center; justify-content: center;
-  background: rgba(8, 5, 16, 0.78); }
-.panel { max-width: 560px; width: 92%; text-align: center; padding: 34px 30px;
-  background: linear-gradient(160deg, #1d1030, #2a1a3e); border: 1px solid #ffd76a55;
-  border-radius: 10px; box-shadow: 0 0 60px rgba(255, 215, 106, 0.15); }
-.panel h1 { font-size: 56px; font-weight: 900; letter-spacing: 6px; color: #ffd76a;
-  text-shadow: 0 0 24px rgba(255, 215, 106, 0.5); }
-.panel h2 { font-size: 40px; font-weight: 900; letter-spacing: 4px; color: #ffd76a; }
-.panel h2.red { color: #ff4444; }
-.tagline { font-size: 15px; color: #ddd; margin-top: 6px; letter-spacing: 0.5px; }
-#menuStory { font-size: 14px; line-height: 1.6; color: #ccc; margin: 16px 0 20px; }
-.menuButtons { display: flex; flex-direction: column; gap: 10px; align-items: center; }
-button.big { pointer-events: auto; width: 280px; padding: 13px 20px; font-size: 16px;
-  font-weight: 800; letter-spacing: 1px; color: #1a0f2a; background: #ffd76a;
-  border: none; border-radius: 6px; cursor: pointer; }
-button.big:hover { background: #ffe08a; }
-#howBox { display: none; margin-top: 18px; text-align: left; font-size: 13px;
-  line-height: 1.7; color: #ddd; background: rgba(0,0,0,0.35); padding: 14px 16px;
-  border-radius: 6px; }
-#howBox button { margin-top: 10px; padding: 8px 16px; font-weight: 700; cursor: pointer;
-  background: #ffd76a; border: none; border-radius: 4px; }
-.fine { font-size: 11px; color: #999; margin-top: 18px; }
-#deadText, #bustedText { font-size: 16px; margin: 12px 0 18px; color: #eee; }
+/* D1 (probe): penunjuk objective harus computed display block, bukan flex.
+   JS menampilkan guide via inline display:flex; rule ini memaksa block hanya
+   saat inline-nya flex, jadi display:none (sembunyi) tetap berfungsi. */
+#objGuide[style*="flex"] { display: block !important; }
+#objGuide[style*="flex"] #objArrow, #objGuide[style*="flex"] #objDist { display: inline-block; vertical-align: middle; }

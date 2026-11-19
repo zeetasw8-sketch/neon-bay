@@ -1,133 +1,97 @@
-// Neon Bay — input keyboard + mouse (v3, ditulis dari nol).
-// Satu aturan penting (perbaikan v2): antrean tombol DIBERSIHKAN setiap kali
-// state game berubah (mati, jeda, kembali bermain), supaya tombol Escape yang
-// ditekan di layar kematian tidak meledak belakangan.
+// Neon Bay — input: keyboard, mouse orbit, wheel zoom, klik tembak.
+// Menyimpan tombol sebagai code DAN key sekaligus, supaya 'Shift' (key)
+// dan 'ShiftLeft' (code) sama-sama dikenali — sprint tidak boleh mati
+// karena beda nama tombol.
+(function () {
+  'use strict';
 
-// Kantong tombol hybrid Map+Set: alat tes boleh keys.set('w', true) atau keys.add('w').
-class KeyBag {
-  constructor() { this._m = new Map(); }
-  set(k, v) { this._m.set(k, v === undefined ? true : v); return this; }
-  get(k) { return this._m.get(k); }
-  has(k) { return !!this._m.get(k); }
-  delete(k) { return this._m.delete(k); }
-  add(k) { this._m.set(k, true); return this; }
-  clear() { this._m.clear(); }
-}
+  var keys = new Set();        // tombol yang sedang ditahan (code + key)
+  var justPressed = new Set(); // tombol yang baru ditekan sejak tick terakhir
+  var shot = null;             // {x, y} klik tembak yang menunggu diproses
+  var game = null;             // NBGame, dipasang main.js lewat attach()
+  var drag = null;             // {x, y, moved} saat drag orbit kamera
+  var canvas = null;
 
-export class Input {
-  constructor() {
-    this.keys = new KeyBag();
-    this.pressed = new Set();   // tombol yang baru ditekan frame ini
-    this._phys = new Set();     // tombol fisik yang sedang ditahan (keyboard asli)
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.mouseDown = false;
-    this.clicked = false;       // klik kiri baru frame ini
-    this.wheel = 0;
-    this.dragging = false;
-    this._onKeyDown = (e) => this._key(e, true);
-    this._onKeyUp = (e) => this._key(e, false);
-    this._onMouseDown = (e) => {
-      if (e.button === 0) { this.mouseDown = true; this.clicked = true; }
-      this.dragging = true;
-    };
-    this._onMouseUp = (e) => {
-      if (e.button === 0) this.mouseDown = false;
-      this.dragging = false;
-    };
-    this._onMouseMove = (e) => {
-      if (!this.dragging) return;
-      this.mouseDX += e.movementX || 0;
-      this.mouseDY += e.movementY || 0;
-    };
-    this._onWheel = (e) => { this.wheel += e.deltaY; };
-    this._onBlur = () => this.clear();
-    this._onContext = (e) => e.preventDefault();
+  var GAME_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'KeyE', 'KeyF', 'KeyR', 'KeyM',
+    'Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+
+  function isShift() {
+    return keys.has('ShiftLeft') || keys.has('ShiftRight') ||
+      keys.has('Shift') || keys.has('shift');
   }
 
-  attach() {
-    window.addEventListener('keydown', this._onKeyDown);
-    window.addEventListener('keyup', this._onKeyUp);
-    window.addEventListener('mousedown', this._onMouseDown);
-    window.addEventListener('mouseup', this._onMouseUp);
-    window.addEventListener('mousemove', this._onMouseMove);
-    window.addEventListener('wheel', this._onWheel);
-    window.addEventListener('blur', this._onBlur);
-    window.addEventListener('contextmenu', this._onContext);
-  }
-
-  detach() {
-    window.removeEventListener('keydown', this._onKeyDown);
-    window.removeEventListener('keyup', this._onKeyUp);
-    window.removeEventListener('mousedown', this._onMouseDown);
-    window.removeEventListener('mouseup', this._onMouseUp);
-    window.removeEventListener('mousemove', this._onMouseMove);
-    window.removeEventListener('wheel', this._onWheel);
-    window.removeEventListener('blur', this._onBlur);
-    window.removeEventListener('contextmenu', this._onContext);
-  }
-
-  _key(e, down) {
-    const k = e.key.length === 1 ? e.key.toLowerCase() : e.key;
-    if ([' ', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+  function onKeyDown(e) {
+    if (GAME_KEYS.indexOf(e.code) >= 0 || e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
       e.preventDefault();
     }
-    if (down) {
-      if (!this.keys.has(k)) this.pressed.add(k);
-      this.keys.set(k, true);
-      this._phys.add(k);
-    } else {
-      this.keys.delete(k);
-      this._phys.delete(k);
+    if (e.repeat) return;
+    keys.add(e.code);
+    keys.add(e.key);
+    justPressed.add(e.code);
+    justPressed.add(e.key);
+  }
+
+  function onKeyUp(e) {
+    keys.delete(e.code);
+    keys.delete(e.key);
+  }
+
+  function onPointerDown(e) {
+    drag = { x: e.clientX, y: e.clientY, moved: false };
+  }
+
+  function onPointerMove(e) {
+    if (!drag || !game) return;
+    var dx = e.clientX - drag.x;
+    var dy = e.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (drag.moved) {
+      game.camYaw += dx * 0.005;
+      game.camPitch = Math.max(0.08, Math.min(1.1, game.camPitch + dy * 0.003));
     }
+    drag.x = e.clientX;
+    drag.y = e.clientY;
   }
 
-  down(code) { return this.keys.has(code); }
-  // Sekali pakai: tombol fisik via pressed; tombol injeksi terpakai sekali lalu hilang.
-  hit(code) {
-    if (this.pressed.has(code)) return true;
-    if (this.keys.has(code) && !this._phys.has(code)) { this.keys.delete(code); return true; }
-    return false;
+  function onPointerUp(e) {
+    if (drag && !drag.moved && game && game.state === 'playing') {
+      shot = { x: e.clientX, y: e.clientY };
+    }
+    drag = null;
   }
 
-  // Sumbu gerak -1..1 dari WASD / panah. Depan = W (maju).
-  moveX() {
-    let x = 0;
-    if (this.down('a') || this.down('ArrowLeft')) x -= 1;
-    if (this.down('d') || this.down('ArrowRight')) x += 1;
-    return x;
-  }
-  moveY() {
-    let y = 0;
-    if (this.down('w') || this.down('ArrowUp')) y += 1;
-    if (this.down('s') || this.down('ArrowDown')) y -= 1;
-    return y;
-  }
-  // D4: tombol Shift disimpan _key() apa adanya ('Shift', huruf besar) —
-  // sprint harus mengecek ejaan itu (dulu 'shift' kecil: tidak pernah true).
-  sprint() { return this.down('Shift') || this.down('shift'); }
-  handbrake() { return this.down(' '); }
-
-  // Dipanggil tiap akhir frame oleh loop utama.
-  endFrame() {
-    this.pressed.clear();
-    this.clicked = false;
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.wheel = 0;
+  function onWheel(e) {
+    if (!game) return;
+    e.preventDefault();
+    var C = window.NB_CONFIG;
+    game.camDist = Math.max(C.camMinDist, Math.min(C.camMaxDist, game.camDist + e.deltaY * 0.01));
   }
 
-  // Pembersihan total — dipanggil pada setiap pergantian state
-  // (masuk jeda, keluar jeda, mati, respawn, ganti misi).
-  clear() {
-    this.keys.clear();
-    this.pressed.clear();
-    this._phys.clear();
-    this.clicked = false;
-    this.mouseDown = false;
-    this.dragging = false;
-    this.mouseDX = 0;
-    this.mouseDY = 0;
-    this.wheel = 0;
+  function onBlur() {
+    keys.clear();
+    justPressed.clear();
+    drag = null;
   }
-}
+
+  window.NBInput = {
+    keys: keys,
+    justPressed: justPressed,
+    isShift: isShift,
+    down: function (code) { return keys.has(code); },
+    // Ambil dan kosongkan antrean tembakan (sekali pakai per klik).
+    takeShot: function () { var s = shot; shot = null; return s; },
+    // Dipanggil main.js tiap akhir tick supaya edge-trigger tidak dobel.
+    endTick: function () { justPressed.clear(); },
+    attach: function (g, cv) {
+      game = g;
+      canvas = cv;
+      window.addEventListener('keydown', onKeyDown);
+      window.addEventListener('keyup', onKeyUp);
+      window.addEventListener('blur', onBlur);
+      canvas.addEventListener('pointerdown', onPointerDown);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      canvas.addEventListener('wheel', onWheel, { passive: false });
+    },
+  };
+})();
