@@ -418,13 +418,17 @@
         decayTimer = 0;
       }
       window.NBAudio.update(G.playerSpeed, G.wanted, dt);
-      window.NBHud.update(G, dt);
     } else if (G.state === 'menu') {
       // Kota tetap hidup di latar menu (lalu lintas + pejalan kaki jalan).
       window.NBVehicles.update(dt);
       window.NBPeople.update(dt, G);
     }
     updateCamera(dt);
+    // HUD sesudah kamera bergerak: panah objektif membaca _camPos frame ini
+    // (arah pandang yang benar-benar di-render), bukan frame sebelumnya.
+    // Sebelumnya HUD dibaca dulu sehingga panah tertinggal 1 frame — saat
+    // drag berkelanjutan panah sempat tidak cocok dengan adegan di layar.
+    if (G.state === 'playing') window.NBHud.update(G, dt);
     try {
       renderer.render(scene, camera);
     } catch (e) { /* abaikan (render di-stub saat tes) */ }
