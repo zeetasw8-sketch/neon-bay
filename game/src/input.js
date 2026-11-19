@@ -103,7 +103,9 @@ export class Input {
     if (this.down('s') || this.down('ArrowDown')) y -= 1;
     return y;
   }
-  sprint() { return this.down('shift'); }
+  // D4: tombol Shift disimpan _key() apa adanya ('Shift', huruf besar) —
+  // sprint harus mengecek ejaan itu (dulu 'shift' kecil: tidak pernah true).
+  sprint() { return this.down('Shift') || this.down('shift'); }
   handbrake() { return this.down(' '); }
 
   // Dipanggil tiap akhir frame oleh loop utama.

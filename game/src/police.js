@@ -117,6 +117,8 @@ export class Police {
       }
       c.x += Math.sin(c.heading) * c.speed * dt;
       c.z += Math.cos(c.heading) * c.speed * dt;
+      // D2: mobil polisi tidak boleh masuk laut (mengejar pemain di tepi pantai).
+      c.z = this.world.clampShore(c.x, c.z);
       const fixed = this.world.resolveCollision(c.x, c.z, 2.2);
       c.x = fixed.x; c.z = fixed.z;
       // Sentuhan dengan pemain jalan kaki: damage kecil + jeda.

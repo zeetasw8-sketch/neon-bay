@@ -430,6 +430,7 @@ class Game {
     this.hud.hideEndScreens();
     this.input.clear();
     this.mode = 'playing';
+    this._snapCamera(); // D5: kamera langsung ikut ke garasi
   }
 
   respawnAtHospital() {
@@ -442,6 +443,7 @@ class Game {
     this.hud.hideEndScreens();
     this.input.clear();
     this.mode = 'playing';
+    this._snapCamera(); // D5: kamera langsung ikut ke rumah sakit
     // Misi yang sedang berjalan dimulai lagi dari awal.
     if (!this.missions.done) this.missions.startMission(this.missions.index);
   }
@@ -557,6 +559,19 @@ class Game {
     this.hud.hidePause();
   }
 
+  // D5: jepret kamera langsung ke belakang pemain (dipakai respawn/restart
+  // supaya perpindahan posisi TERLIHAT seketika, bukan melayang pelan).
+  _snapCamera() {
+    const p = this.player;
+    const yaw = p.heading + this.camYaw;
+    const dist = p.inCar ? this.camDist + 2 : this.camDist;
+    const cx = p.x - Math.sin(yaw) * dist * Math.cos(this.camPitch);
+    const cz = p.z - Math.cos(yaw) * dist * Math.cos(this.camPitch);
+    const cy = 1.6 + dist * Math.sin(this.camPitch);
+    this._camPos.set(cx, cy, cz);
+    this._camYawSmooth = yaw;
+  }
+
   _onResize() {
     this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
@@ -567,7 +582,8 @@ class Game {
   _tryEnterCar() {
     const p = this.player;
     if (p.inCar) { this._exitCar(); return; }
-    const rec = this.traffic.nearestCar(p.x, p.z, 5);
+    // D7: radius masuk mobil 5 -> 8 m (prompt juga 8 m, lihat update()).
+    const rec = this.traffic.nearestCar(p.x, p.z, 8);
     if (!rec) return;
     if (!rec.owned) {
       this.addWanted(CAR.stealHeat);
@@ -731,6 +747,23 @@ class Game {
       this.hud.setCrosshair(p.hasGun);
     }
 
+    // D2: laut tidak bisa dimasuki — dinding tak terlihat di tepi air.
+    // Koridor dermaga dikecualikan (pickup JOB 1 ada di ujung dermaga).
+    {
+      const maxZ = this.world.clampShore(p.x, p.z);
+      if (p.z > maxZ) {
+        p.z = maxZ;
+        if (p.inCar && p.car) {
+          p.car.z = maxZ;
+          if (p.car.speed > 0 && Math.cos(p.car.heading) > 0) p.car.speed = 0;
+        }
+        if (this.time - (this._seaWarnAt || -99) > 4) {
+          this._seaWarnAt = this.time;
+          this.hud.toast("You can't swim — turn back!", 3);
+        }
+      }
+    }
+
     // Mobil pemain (saat dikendarai) menabrak orang.
     if (p.inCar && Math.abs(p.speed) > 3) {
       for (const ped of this.people.peds) {
@@ -757,9 +790,13 @@ class Game {
 
     // Prompt konteks.
     if (!p.inCar) {
-      const near = this.traffic.nearestCar(p.x, p.z, 5);
-      if (near) this.hud.setPrompt(near.owned ? 'Press E to enter your car' : 'Press E to steal car');
-      else if (this.missions.failed) this.hud.setPrompt('Press R to retry the job');
+      // D7: radius masuk mobil 5 -> 8 m + jarak di prompt, supaya pemain
+      // tahu mobil sudah dalam jangkauan E dari jauh.
+      const near = this.traffic.nearestCar(p.x, p.z, 8);
+      if (near) {
+        const d = Math.round(Math.hypot(near.x - p.x, near.z - p.z));
+        this.hud.setPrompt((near.owned ? 'Press E to enter your car' : 'Press E to steal car') + ' — ' + d + 'm');
+      } else if (this.missions.failed) this.hud.setPrompt('Press R to retry the job');
       else this.hud.setPrompt(null);
     } else {
       this.hud.setPrompt('Press E to exit car');
@@ -794,6 +831,21 @@ class Game {
       ? { x: this.world.beacon.position.x, z: this.world.beacon.position.z }
       : null;
 
+    // D1: penunjuk objective di HUD — panah berputar ke arah target + jarak.
+    // Sudut dihitung dari arah pandang kamera (heading + camYaw) ke target,
+    // sehingga panah selalu menunjuk arah yang benar di layar.
+    if (this.missionTarget && this.mode === 'playing') {
+      const tx = this.missionTarget.x - p.x, tz = this.missionTarget.z - p.z;
+      const dist = Math.hypot(tx, tz);
+      const camA = p.heading + this.camYaw;
+      const fwd = tx * Math.sin(camA) + tz * Math.cos(camA);
+      const right = -tx * Math.cos(camA) + tz * Math.sin(camA);
+      const deg = Math.atan2(right, fwd) * 180 / Math.PI;
+      this.hud.setObjectiveGuide(deg, dist, dist > 4);
+    } else {
+      this.hud.setObjectiveGuide(0, 0, false);
+    }
+
     // Audio: mesin ikut kecepatan, sirene bila polisi dekat.
     const speed01 = p.inCar ? Math.abs(p.speed) / CAR.topSpeed : 0;
     this.audio.update(dt, speed01, nearestPolice < 60, p.inCar);
@@ -820,7 +872,15 @@ class Game {
       this.camera.lookAt(this._lookAt);
     } else {
       // Kamera kejar: di belakang pemain/mobil, pitch + jarak bisa diatur debug.
-      const yaw = p.heading + this.camYaw;
+      // D3: yaw kamera DIHALUSKAN (ease ke arah heading + camYaw) supaya
+      // belokan A/D tidak mengayun kamera dan arah WASD terasa stabil.
+      const targetYaw = p.heading + this.camYaw;
+      if (this._camYawSmooth === undefined || this._camYawSmooth === null) this._camYawSmooth = targetYaw;
+      let dy = targetYaw - this._camYawSmooth;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      this._camYawSmooth += dy * Math.min(1, dt * 4.5);
+      const yaw = this._camYawSmooth;
       const dist = p.inCar ? this.camDist + 2 : this.camDist;
       const cx = p.x - Math.sin(yaw) * dist * Math.cos(this.camPitch);
       const cz = p.z - Math.cos(yaw) * dist * Math.cos(this.camPitch);
@@ -840,7 +900,7 @@ class Game {
     this._syncPlayerMesh();
     this.fleet.sync(this.time, dt);
     this.people.sync();
-    this.world.update(dt, this.time);
+    this.world.update(dt, this.time, this.player.x, this.player.z);
     this.renderer.render(this.scene, this.camera);
   }
 

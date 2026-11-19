@@ -20,7 +20,7 @@ function makeWindowTexture() {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 256;
   const g = c.getContext('2d');
-  g.fillStyle = '#2c2f3d';
+  g.fillStyle = '#3d4258'; // D6: fasad lebih terang supaya gedung tidak hitam di malam hari
   g.fillRect(0, 0, 256, 256);
   const lit = ['#ffd76a', '#9fd8ff', '#ff9d5c', '#c9f2ff'];
   for (let y = 0; y < 6; y++) {
@@ -146,9 +146,11 @@ export class World {
   }
 
   _buildLights() {
-    const hemi = new THREE.HemisphereLight(0x8a6fd0, 0x1a1410, 0.75);
+    // D6: malam terlalu gelap (gedung jadi balok hitam) — naikkan cahaya
+    // ambient + matahari supaya kota tetap terbaca di malam hari.
+    const hemi = new THREE.HemisphereLight(0x8a6fd0, 0x1a1410, 1.15);
     this.scene.add(hemi);
-    const sun = new THREE.DirectionalLight(COLORS.sun, 1.6);
+    const sun = new THREE.DirectionalLight(COLORS.sun, 2.0);
     sun.position.set(-120, 160, -80);
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
@@ -367,18 +369,21 @@ export class World {
   }
 
   _buildBeacon() {
-    const geo = new THREE.CylinderGeometry(1.6, 2.4, 90, 12, 1, true);
+    // D1: suar objective WAJIB terlihat dari seberang kota — dulu kolomnya
+    // tipis (radius ~2) dan redup (opacity 0,35) sehingga pemain tidak
+    // pernah melihatnya. Sekarang: kolom lebar + terang + tidak kena kabut.
+    const geo = new THREE.CylinderGeometry(4.2, 5.6, 120, 12, 1, true);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffd76a, transparent: true, opacity: 0.35,
+      color: 0xffd76a, transparent: true, opacity: 0.5, fog: false,
       blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
     });
     this.beacon = new THREE.Mesh(geo, mat);
-    this.beacon.position.set(0, 45, 0);
+    this.beacon.position.set(0, 60, 0);
     this.beacon.visible = false;
     this.scene.add(this.beacon);
-    const ringGeo = new THREE.RingGeometry(2.5, 3.5, 24);
+    const ringGeo = new THREE.RingGeometry(4.5, 6.5, 32);
     const ringMat = new THREE.MeshBasicMaterial({
-      color: 0xffd76a, transparent: true, opacity: 0.8, side: THREE.DoubleSide,
+      color: 0xffd76a, transparent: true, opacity: 0.9, side: THREE.DoubleSide, fog: false,
     });
     this.beaconRing = new THREE.Mesh(ringGeo, ringMat);
     this.beaconRing.rotation.x = -Math.PI / 2;
@@ -392,9 +397,16 @@ export class World {
     this.beacon.visible = on;
     this.beaconRing.visible = on;
     if (on) {
-      this.beacon.position.set(x, 45, z);
+      this.beacon.position.set(x, 60, z);
       this.beaconRing.position.set(x, 0.2, z);
     }
+  }
+
+  // D2: tepi laut — dinding tak terlihat. Koridor dermaga (x 143..157)
+  // boleh sampai ujung dermaga (z 209), selebihnya pasir berakhir di z 206.
+  clampShore(x, z) {
+    const maxZ = (x > WORLD.pierX0 && x < WORLD.pierX1) ? WORLD.pierMaxZ : WORLD.shoreMaxZ;
+    return z > maxZ ? maxZ : z;
   }
 
   // Pindahkan kamera bayangan mengikuti pemain (area sempit = murah).
@@ -405,9 +417,15 @@ export class World {
     this.sun.target.updateMatrixWorld();
   }
 
-  update(dt, t) {
+  update(dt, t, px, pz) {
     if (this.beacon && this.beacon.visible) {
-      this.beacon.material.opacity = 0.28 + 0.12 * Math.sin(t * 3);
+      // Suar memudar saat pemain mendekat: dari jauh tetap terang (mudah
+      // ditemukan), dari dekat nyaris transparan supaya tidak menutupi
+      // pemandangan/pemusuh di sekitar target (shot 2 dulu tertutup suar).
+      const d = (px === undefined) ? 999
+        : Math.hypot(px - this.beacon.position.x, pz - this.beacon.position.z);
+      const fade = Math.min(1, Math.max(0.18, (d - 8) / 42));
+      this.beacon.material.opacity = (0.45 + 0.15 * Math.sin(t * 3)) * fade;
       const s = 1 + 0.08 * Math.sin(t * 3);
       this.beaconRing.scale.set(s, s, 1);
     }

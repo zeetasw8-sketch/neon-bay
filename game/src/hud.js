@@ -14,6 +14,7 @@ export class Hud {
       speedo: $('speedo'), speedVal: $('speedVal'), crosshair: $('crosshair'),
       minimap: $('minimap'), toast: $('toast'), prompt: $('prompt'), hint: $('controlsHint'),
       banner: $('banner'), bannerTitle: $('bannerTitle'), bannerSub: $('bannerSub'),
+      objGuide: $('objGuide'), objArrow: $('objArrow'), objDist: $('objDist'),
       menu: $('menu'), menuTitle: $('menuTitle'), menuStory: $('menuStory'),
       startBtn: $('startBtn'), btnStart: $('btnStart'), playGame: $('playGame'),
       continueBtn: $('continueBtn'), howBtn: $('howBtn'),
@@ -74,6 +75,17 @@ export class Hud {
     const show = !!text;
     this.el.prompt.style.display = show ? 'block' : 'none';
     if (show) this._set('prompt', this.el.prompt, text);
+  }
+
+  // D1: penunjuk objective — panah berputar ke arah target + jarak (meter).
+  // deg: 0 = lurus ke depan, +90 = kanan, 180 = di belakang.
+  setObjectiveGuide(deg, distM, show) {
+    const el = this.el.objGuide;
+    if (!el) return;
+    el.style.display = show ? 'block' : 'none';
+    if (!show) return;
+    if (this.el.objArrow) this.el.objArrow.style.transform = `rotate(${Math.round(deg)}deg)`;
+    this._set('objDist', this.el.objDist, Math.round(distM) + ' m');
   }
 
   setCrosshair(show) {
@@ -171,7 +183,8 @@ export class Hud {
       ctx.beginPath(); ctx.moveTo(px(line), py(-182)); ctx.lineTo(px(line), py(208)); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(px(-182), py(line)); ctx.lineTo(px(182), py(line)); ctx.stroke();
     }
-    // Landmark: garasi emas, bank biru, rumah sakit putih.
+    // Landmark: garasi emas, bank biru, rumah sakit putih + salib merah.
+    // D8: warna-warna ini persis seperti legenda minimap (lihat index.html).
     const mark = (x, z, color, size) => {
       ctx.fillStyle = color;
       ctx.fillRect(px(x) - size / 2, py(z) - size / 2, size, size);
@@ -179,13 +192,22 @@ export class Hud {
     mark(0, 120, '#ffd76a', 8);
     mark(-70, -70, '#4d8fd2', 8);
     mark(140, 140, '#ffffff', 8);
-    // Target misi (berdenyut emas).
+    ctx.fillStyle = '#cc2222';
+    ctx.fillRect(px(140) - 1, py(140) - 3.5, 2, 7);
+    ctx.fillRect(px(140) - 3.5, py(140) - 1, 7, 2);
+    // Target misi (D1+D8): lingkaran PUTIH berdenyut yang BESAR + cincin emas,
+    // supaya terlihat jelas dan cocok dengan legenda (putih = objective).
     if (game.missionTarget) {
-      const pulse = 4 + 2 * Math.sin(performance.now() / 200);
-      ctx.fillStyle = '#ffd76a';
+      const pulse = 6 + 2.5 * Math.sin(performance.now() / 200);
+      ctx.fillStyle = '#ffffff';
       ctx.beginPath();
       ctx.arc(px(game.missionTarget.x), py(game.missionTarget.z), pulse, 0, Math.PI * 2);
       ctx.fill();
+      ctx.strokeStyle = '#ffd76a';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(px(game.missionTarget.x), py(game.missionTarget.z), pulse + 2, 0, Math.PI * 2);
+      ctx.stroke();
     }
     // Mobil lalu lintas (abu-abu), polisi (biru/merah).
     ctx.fillStyle = '#9aa0ad';
@@ -197,12 +219,12 @@ export class Hud {
       ctx.fillStyle = (Math.floor(performance.now() / 300) + i) % 2 === 0 ? '#ff2222' : '#2266ff';
       ctx.fillRect(px(c.x) - 2, py(c.z) - 2, 4, 4);
     }
-    // Pemain: panah putih searah heading.
+    // Pemain: panah KUNING searah heading (D8: kuning = pemain/mobil).
     const p = game.player;
     ctx.save();
     ctx.translate(px(p.x), py(p.z));
     ctx.rotate(Math.PI - p.heading);
-    ctx.fillStyle = '#ffffff';
+    ctx.fillStyle = '#ffe14d';
     ctx.beginPath();
     ctx.moveTo(0, -7); ctx.lineTo(5, 5); ctx.lineTo(0, 2); ctx.lineTo(-5, 5);
     ctx.closePath();

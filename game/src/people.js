@@ -170,6 +170,8 @@ export class People {
           p.heading += Math.PI;
         }
       }
+      // D2: pejalan kaki tidak boleh masuk laut.
+      p.z = this.world.clampShore(p.x, p.z);
       const fixed = this.world.resolveCollision(p.x, p.z, 0.5);
       p.x = fixed.x; p.z = fixed.z;
     }
@@ -192,6 +194,8 @@ export class People {
       t.z += t.knockZ * dt;
       t.knockX *= Math.max(0, 1 - dt * 6);
       t.knockZ *= Math.max(0, 1 - dt * 6);
+      // D2: preman tidak boleh masuk laut (mengejar pemain sampai dermaga).
+      t.z = this.world.clampShore(t.x, t.z);
       const fixed = this.world.resolveCollision(t.x, t.z, 0.6);
       t.x = fixed.x; t.z = fixed.z;
     }

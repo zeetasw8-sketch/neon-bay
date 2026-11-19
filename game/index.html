@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" href="data:,">
 <title>Neon Bay — open-world crime</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -17,6 +18,16 @@
     <div id="missionTimer"></div>
   </div>
   <div id="toast"></div>
+  <div id="objGuide"><span id="objArrow">▲</span><span id="objDist"></span></div>
+  <div id="mapLegend">
+    <div><i class="lg-you">▲</i> You / your car</div>
+    <div><i class="lg-obj"></i> Objective</div>
+    <div><i class="lg-bank"></i> Bank</div>
+    <div><i class="lg-garage"></i> Garage</div>
+    <div><i class="lg-hosp">+</i> Hospital</div>
+    <div><i class="lg-car"></i> Traffic</div>
+    <div><i class="lg-cop"></i> Police</div>
+  </div>
   <div id="topRight">
     <div id="money">$0</div>
     <div id="healthBar"><div id="healthFill"></div></div>
@@ -55,8 +66,10 @@
       <p><b>F</b> — punch &nbsp;·&nbsp; <b>CLICK</b> — shoot (only with a pistol)</p>
       <p>Drag mouse to look around, wheel to zoom the camera.</p>
       <p><b>P / ESC</b> — pause &nbsp;·&nbsp; <b>R</b> — retry a failed job &nbsp;·&nbsp; <b>M</b> — mute</p>
-      <p>Follow the gold beacon. Lose the cops by getting more than 45 m away from
+      <p>Follow the gold beacon. The ▲ arrow at the top of the screen points
+      to your objective, with the distance in meters. Lose the cops by getting more than 45 m away from
       every patrol car — your wanted level drops one star every 20 seconds.</p>
+      <p><b>Minimap:</b> ▲ yellow = you / your car · ○ white = objective · ■ blue = bank · ■ gold = garage · ✚ hospital · grey = traffic · red/blue = police.</p>
       <p>WASTED or BUSTED costs a $150 fine. Your progress saves after every job.</p>
       <button id="howCloseBtn">CLOSE</button>
     </div>

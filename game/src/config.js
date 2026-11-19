@@ -9,6 +9,9 @@ export const WORLD = {
   blockSize: 56,
   beachStartZ: 182,       // pasir mulai di selatan kota
   seaStartZ: 208,         // laut mulai setelah pasir
+  shoreMaxZ: 206,         // D2: dinding tak terlihat di tepi air (pasir berakhir)
+  pierMaxZ: 209,          // D2: koridor dermaga boleh sampai ujung dermaga
+  pierX0: 143, pierX1: 157, // D2: koridor dermaga (lebar dermaga 9 m)
   worldEdge: 400,         // batas bidang tanah/laut yang digambar
 };
 
@@ -136,7 +139,7 @@ export const COLORS = {
   sky: 0x2a1a4e,        // senja ungu — dipertahankan di rebuild ini
   fog: 0x2a1a4e,
   sun: 0xffb36b,
-  ground: 0x3a3f4a,
+  ground: 0x464b58,     // D6: tanah sedikit lebih terang (malam tidak pekat)
   road: 0x23242c,
   sidewalk: 0x4a4d58,
   sand: 0xc9a86a,

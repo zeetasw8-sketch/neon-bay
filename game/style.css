@@ -19,6 +19,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: #2a1a3e;
   color: #fff; font-size: 15px; font-weight: 700; letter-spacing: 0.5px;
   padding: 8px 16px; border-radius: 4px; white-space: nowrap; }
 
+/* Penunjuk objective (D1): panah arah + jarak, tengah atas di bawah toast */
+#objGuide { position: absolute; top: 152px; left: 50%; transform: translateX(-50%);
+  display: none; background: rgba(10, 8, 20, 0.78); border: 1px solid #ffd76a;
+  color: #ffd76a; font-size: 16px; font-weight: 800; letter-spacing: 0.5px;
+  padding: 6px 14px; border-radius: 4px; white-space: nowrap; }
+#objArrow { display: inline-block; margin-right: 8px; }
+#objDist { color: #fff; }
+
+/* Legenda minimap (D8): di kiri minimap, kanan bawah */
+#mapLegend { position: absolute; right: 196px; bottom: 14px; font-size: 11px;
+  line-height: 1.75; color: #ddd; background: rgba(10, 8, 20, 0.6);
+  padding: 8px 10px; border-radius: 4px; text-align: left; white-space: nowrap; }
+#mapLegend i { display: inline-block; width: 10px; height: 10px; margin-right: 6px;
+  font-style: normal; text-align: center; line-height: 10px; font-size: 10px; }
+#mapLegend .lg-you { color: #ffe14d; }
+#mapLegend .lg-obj { background: #fff; border-radius: 50%; }
+#mapLegend .lg-bank { background: #4d8fd2; }
+#mapLegend .lg-garage { background: #ffd76a; }
+#mapLegend .lg-hosp { background: #fff; color: #cc2222; font-weight: 900; }
+#mapLegend .lg-car { background: #9aa0ad; }
+#mapLegend .lg-cop { background: #ff2222; }
+
 /* Kanan atas: uang, nyawa, bintang */
 #topRight { position: absolute; top: 14px; right: 14px; text-align: right; }
 #money { font-size: 26px; font-weight: 800; color: #7dff9a;

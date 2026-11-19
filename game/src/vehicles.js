@@ -418,11 +418,12 @@ export class Traffic {
   }
 
   // Mobil terdekat (parkir atau lalu lintas) dalam jarak d dari titik.
+  // Batas inklusif (<=): mobil tepat di radius d tetap terjangkau E.
   nearestCar(x, z, d) {
     let best = null, bd = d;
     for (const c of [...this.parked, ...this.cars]) {
       const dd = Math.hypot(c.x - x, c.z - z);
-      if (dd < bd) { bd = dd; best = c; }
+      if (dd <= bd) { bd = dd; best = c; }
     }
     return best;
   }
