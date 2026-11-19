@@ -197,17 +197,42 @@ export class Hud {
     ctx.fillRect(px(140) - 3.5, py(140) - 1, 7, 2);
     // Target misi (D1+D8): lingkaran PUTIH berdenyut yang BESAR + cincin emas,
     // supaya terlihat jelas dan cocok dengan legenda (putih = objective).
+    // RONDE 2: target di LUAR jangkauan minimap (pier (150,196) = 91,7 px
+    // dari tengah, sedangkan lingkaran minimap cuma R=84) sehingga dulu
+    // ter-clip dan tidak pernah terlihat — bank yang lebih dekat (36,8 px)
+    // tampil, objective tidak. Sekarang marker DIJEPIT ke tepi lingkaran
+    // (radius R-10) dengan arah (bearing) yang benar, + segitiga kecil
+    // menunjuk ke luar sebagai tanda "objective ada di luar peta, ke arah ini".
     if (game.missionTarget) {
-      const pulse = 6 + 2.5 * Math.sin(performance.now() / 200);
+      let mx = px(game.missionTarget.x), my = py(game.missionTarget.z);
+      const dx = mx - C, dy = my - C;
+      const d = Math.hypot(dx, dy);
+      const maxR = R - 10;
+      let ux = 0, uy = -1;
+      if (d > maxR) {
+        ux = dx / d; uy = dy / d;
+        mx = C + ux * maxR; my = C + uy * maxR;
+      } else if (d > 0.001) { ux = dx / d; uy = dy / d; }
+      const pulse = 7 + 2.5 * Math.sin(performance.now() / 200);
       ctx.fillStyle = '#ffffff';
       ctx.beginPath();
-      ctx.arc(px(game.missionTarget.x), py(game.missionTarget.z), pulse, 0, Math.PI * 2);
+      ctx.arc(mx, my, pulse, 0, Math.PI * 2);
       ctx.fill();
       ctx.strokeStyle = '#ffd76a';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(px(game.missionTarget.x), py(game.missionTarget.z), pulse + 2, 0, Math.PI * 2);
+      ctx.arc(mx, my, pulse + 2, 0, Math.PI * 2);
       ctx.stroke();
+      if (d > maxR) {
+        // Segitiga penunjuk arah di luar marker (tetap di dalam lingkaran).
+        ctx.fillStyle = '#ffd76a';
+        ctx.beginPath();
+        ctx.moveTo(mx + ux * (pulse + 9), my + uy * (pulse + 9));
+        ctx.lineTo(mx - uy * 4 + ux * (pulse + 2), my + ux * 4 + uy * (pulse + 2));
+        ctx.lineTo(mx + uy * 4 + ux * (pulse + 2), my - ux * 4 + uy * (pulse + 2));
+        ctx.closePath();
+        ctx.fill();
+      }
     }
     // Mobil lalu lintas (abu-abu), polisi (biru/merah).
     ctx.fillStyle = '#9aa0ad';

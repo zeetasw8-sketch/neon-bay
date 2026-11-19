@@ -371,15 +371,25 @@ export class World {
   _buildBeacon() {
     // D1: suar objective WAJIB terlihat dari seberang kota — dulu kolomnya
     // tipis (radius ~2) dan redup (opacity 0,35) sehingga pemain tidak
-    // pernah melihatnya. Sekarang: kolom lebar + terang + tidak kena kabut.
-    const geo = new THREE.CylinderGeometry(4.2, 5.6, 120, 12, 1, true);
+    // pernah melihatnya. Ronde 1 menebalkannya (radius 4,2/5,6, tinggi 120)
+    // tapi review Chrome ronde 2 tetap tidak melihat sorotan vertikal dari
+    // spawn: kolom 120 m tertutup gedung blok (70,140) dan puncaknya keluar
+    // dari frame (FOV 62°, kamera rendah) — yang terlihat cuma strip neon
+    // atap gedung. RONDE 2: kolom JAUH lebih tinggi (260 m, menembus langit
+    // di atas atap mana pun) + lebih lebar + depthTest:false supaya terlihat
+    // MENEMBUS gedung — suar penunjuk objective memang harus terlihat dari
+    // mana saja, seperti quest marker. Fade saat mendekat tetap dipertahankan
+    // supaya tidak menutupi adegan di sekitar target.
+    const geo = new THREE.CylinderGeometry(7, 9, 260, 12, 1, true);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffd76a, transparent: true, opacity: 0.5, fog: false,
+      color: 0xffd76a, transparent: true, opacity: 0.6, fog: false,
       blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false,
+      depthTest: false,
     });
     this.beacon = new THREE.Mesh(geo, mat);
-    this.beacon.position.set(0, 60, 0);
+    this.beacon.position.set(0, 130, 0);
     this.beacon.visible = false;
+    this.beacon.renderOrder = 999;
     this.scene.add(this.beacon);
     const ringGeo = new THREE.RingGeometry(4.5, 6.5, 32);
     const ringMat = new THREE.MeshBasicMaterial({
@@ -397,7 +407,7 @@ export class World {
     this.beacon.visible = on;
     this.beaconRing.visible = on;
     if (on) {
-      this.beacon.position.set(x, 60, z);
+      this.beacon.position.set(x, 130, z);
       this.beaconRing.position.set(x, 0.2, z);
     }
   }
