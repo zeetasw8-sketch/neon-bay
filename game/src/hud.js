@@ -197,7 +197,17 @@
       var dz = obj.z - game.playerPos.z;
       var dist = Math.hypot(dx, dz);
       var bearing = Math.atan2(dx, dz);
-      var rel = wrapAngle(bearing - game.camYawAbs());
+      // Arah pandang kamera AKTUAL (dari posisi kamera ke pemain), bukan yaw
+      // yang dihaluskan: saat drag cepat / fps rendah, _camYawSmooth bisa
+      // menyimpang dari arah pandang sebenarnya (posisi kamera di-lerp
+      // sepanjang chord, bukan busur), sehingga panah sempat menunjuk arah
+      // yang salah di dekat ±180°. Bila kamera terlalu dekat dengan pemain
+      // (transit chord), pakai yaw yang dihaluskan sebagai cadangan.
+      var cdx = game.playerPos.x - game._camPos.x;
+      var cdz = game.playerPos.z - game._camPos.z;
+      var camFwd = (cdx * cdx + cdz * cdz) > 0.25
+        ? Math.atan2(cdx, cdz) : game.camYawAbs();
+      var rel = wrapAngle(bearing - camFwd);
       el.objGuide.style.display = 'flex';
       el.objDist.textContent = Math.round(dist) + ' m';
       el.objArrow.style.transform = 'rotate(' + (-rel * 180 / Math.PI) + 'deg)';
