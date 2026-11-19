@@ -1,5 +1,9 @@
 # Neon Bay
 
+[![make.fun · gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![rank](https://make.fun/badge/gta6-01/zeetasw8-sketch/neon-bay/rank.svg)](https://make.fun/bounty/gta6-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+[![reward](https://make.fun/badge/gta6-01/zeetasw8-sketch/neon-bay/reward.svg)](https://make.fun/bounty/gta6-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-01)
+
 Six jobs. One city. Three stars of heat. Steal the case, lose the cops, get home.
 
 Neon Bay is an open-world crime game: drive and walk a 5×5-block city at sunset, take six jobs from your fixer Mara Voss, and outrun the police. You are Dex Marlowe, a driver fresh out of luck. Finish all six to become a **Neon Bay Legend**, then free-roam the city.
