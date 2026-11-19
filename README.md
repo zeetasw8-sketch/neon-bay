@@ -1,66 +1,70 @@
-[![make.fun](https://make.fun/badge/gta6-01.svg)](https://make.fun/c/gta6-01)
-[![make.fun](https://make.fun/badge/entry.svg)](https://make.fun/c/gta6-01)
-[![make.fun](https://make.fun/badge/open-world.svg)](https://make.fun/c/gta6-01)
+[![gta6-01](https://make.fun/badge/gta6-01.svg)](https://make.fun/competitions/gta6-01)
+[![rank](https://make.fun/badge/gta6-01/zeetasw8-sketch/neon-bay/rank.svg)](https://make.fun/competitions/gta6-01)
+[![reward](https://make.fun/badge/gta6-01/zeetasw8-sketch/neon-bay/reward.svg)](https://make.fun/competitions/gta6-01)
 
 # Neon Bay — open-world crime
 
-An open-world crime game that runs in a desktop browser from its own files.
-Built for the [make.fun GTA 6 bounty](https://make.fun/c/gta6-01).
+An open-world crime game set in Neon Bay, a neon-lit city at **sunset**. You are Dex Marlowe, a driver fresh out of luck. Your fixer Mara Voss has six jobs for you — a pickup, a hot delivery, a stolen car, a heat problem, a dock fight, and the big one at Meridian Bank. Do them clean, get paid, and maybe the city lets you keep the money.
 
-You are **Dex Marlowe**, a wheelman with a teal jacket and a pink starter car.
-**Mara Voss** has six jobs for you across a sunset city on the bay — from a
-first pickup at the south pier to the big bank job. Steal cars, lose the heat,
-fight at the docks, and get out clean.
+## Jobs
 
-## Play
+| # | Job | Reward |
+|---|-----|--------|
+| 1 | FIRST PICKUP — fetch a package from the south pier, bring it home | $200 |
+| 2 | HOT DELIVERY — a buyer waits at the far north end, 100 seconds | $350 |
+| 3 | BORROWED WHEELS — steal any car, bring it to the garage | $400 |
+| 4 | LOSE THE HEAT — shake a 2-star wanted level | $500 |
+| 5 | DOCKSIDE TROUBLE — pistol fight with 3 thugs at the docks | $600 |
+| 6 | THE BIG ONE — grab the case at Meridian Bank, lose 3 stars, get home | $1,500 |
 
-Open `game/index.html` in desktop Chrome (or serve `game/` with any static
-server). No network request is made while playing; every script, sound and
-image is a file under `game/` or a `data:` URI.
+Finish all six to become a **Neon Bay Legend**, then free-roam the city.
 
-- **WASD** move / drive · **E** enter & exit a car · **F** punch
-- **Mouse click** shoot (once you have the pistol) · **SHIFT** sprint
-- **SPACE** handbrake · **P / ESC** pause · **R** retry the job · **M** mute
-- **Drag mouse** to look around · **wheel** to zoom
+## Controls
+
+- **WASD** — move / drive
+- **SHIFT** — sprint
+- **E** — enter / exit car
+- **F** — punch
+- **CLICK** — shoot (once you have the pistol)
+- **SPACE** — handbrake
+- **R** — retry mission
+- **ESC / P** — pause
+- **M** — mute
+- **Drag mouse** — look around · **Wheel** — zoom
 
 ## The city
 
-A 5×5 block grid with roads, sidewalks, lit windows and neon roof strips, a
-sandy beach and the sea at the south edge, a wooden pier, and three landmarks:
-the **garage** (home base), the **bank**, and the **hospital** (respawn point).
-The sky stays a purple dusk with a low sunset over the bay. A gold beam in the
-sky marks your objective from anywhere in the city; the round minimap shows
-the roads, the sea, your garage, the bank, the hospital, traffic, police and
-your objective.
+A 5×5-block city with 10 traffic cars and 16 pedestrians, a beach and a wooden pier along the south edge, the Meridian Bank, a hospital (where you wake up after getting wasted or busted), and your garage — home base. A tall gold beacon marks your objective from anywhere in the city; the arrow and distance at the top of the screen point the way.
 
-## The six jobs
-
-1. **First Pickup** — take the package at the south pier, return to the garage. $200
-2. **Hot Delivery** — drive the package to the buyer in the north in 100 seconds. $350
-3. **Borrowed Wheels** — steal any car and bring it to the garage. $400
-4. **Lose the Heat** — wanted level 2: get more than 45 m away from every police car and stay clean until the stars fade. $500
-5. **Dockside Trouble** — get the pistol and defeat 3 thugs at the pier. $600
-6. **The Big One** — rob the bank (pick up the cash in front of the bank entrance), then escape to the garage with wanted level 0 in 240 seconds. $1500
-
-After the sixth job the bay is yours: free roam.
-
-## Wanted
-
-Stealing a car, punching a pedestrian, or hitting one with a car raises your
-wanted level. One Bay PD car hunts you per star. Police bust you if one stays
-within 5 m while you move slower than 3 m/s for 2 seconds — so keep moving,
-or hide behind the buildings until the stars fade (one per 20 seconds with no
-police car within 45 m). Getting wasted or busted costs a $150 fine and wakes
-you up at the hospital.
+**Wanted:** stealing a car, punching or shooting a bystander raises your heat. Police chase you; if one stays close while you are slow for 2 seconds, you are BUSTED. Get more than 45 m from every cop car and stay clean — a star fades every 20 seconds.
 
 ## Tech
 
-Three.js (vendored under `game/vendor/`), one animation loop, clamped delta
-time, pixel ratio capped at 2, simple Lambert/Basic materials, one sun light
-with a 1024 shadow map frozen for statics, a few real point lights, merged
-static geometry per city sector, no per-frame allocation in the hot loop, and
-all audio synthesized with WebAudio — no audio files. Your cash and job are
-saved automatically (localStorage) so CONTINUE resumes them.
+- Three.js (vendored, `game/vendor/three.min.js`), plain static files, no network requests at runtime.
+- All sound is synthesized with WebAudio — engine hum, two-tone sirens, gunshots, and a quiet synthwave bass loop. No audio files.
+- Progress autosaves to `localStorage` (money, job, pistol).
 
-A completely original game: its own city, characters, vehicles, names, story,
-art, sounds and music. Nothing from any commercial game.
+## Structure
+
+- `game/index.html` — the page, menus and HUD
+- `game/style.css` — HUD and menu styling
+- `game/src/config.js` — tuning constants and the six mission definitions
+- `game/src/input.js` — keyboard + mouse
+- `game/src/audio.js` — synthesized sound
+- `game/src/world.js` — the city, the beach, the pier, the gold beacon
+- `game/src/vehicles.js` — traffic, parked cars, the player car
+- `game/src/people.js` — pedestrians and the dock thugs
+- `game/src/police.js` — the chase, the bust, the heat decay
+- `game/src/combat.js` — punching and the pistol
+- `game/src/missions.js` — the six jobs, timers, rewards, restart
+- `game/src/hud.js` — mission box, arrow, minimap, toasts, banners
+- `game/src/main.js` — the game loop, the camera, save/load
+
+## Screenshots
+
+1. `1-chase.jpg` — JOB 6 bank-heist chase, 3★ wanted
+2. `2-mission.jpg` — JOB 5 pistol fight at the docks
+3. `3-drive.jpg` — JOB 2 timed delivery
+4. `4-escape.jpg` — JOB 4 on-foot escape, 2★ wanted
+
+Built for the [gta6-01 competition on make.fun](https://make.fun/competitions/gta6-01).

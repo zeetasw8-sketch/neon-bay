@@ -1,176 +1,155 @@
-// Neon Bay — polisi (Bay PD): 1 mobil per bintang wanted.
-// Kejar dengan belok terbatas (radius putar besar) dan melambat saat dekat
-// supaya tidak meleset lewat pemain — dulu mereka selalu overshoot dan
-// tidak pernah bisa menangkap. Tabrakan ke pemain jalan kaki hanya 4 HP/dtk
-// supaya BUSTED sempat terjadi sebelum pemain mati. Setirnya naif
-// (langsung ke arah pemain, tanpa hindari gedung) sehingga mobil polisi
-// bisa tersangkut di gedung dan pemain bisa lolos > 45 m.
-(function () {
-  'use strict';
+// Neon Bay — police (v5 rebuild). One car per wanted star. A police car
+// steers toward the player but eases off as it closes in (an arrive
+// behaviour), so it can sit beside the player and bust them instead of
+// overshooting at full speed — the P1-1 fix. Contact damage is low on
+// purpose, so BUSTED lands before death. If every police car is farther
+// than 45 m and the player stays clean, a star fades every 20 s.
 
-  var C = window.NB_CONFIG;
-  var scene = null;
-  var cars = [];
-  var bustTimer = 0;
-  var sirenPhase = 0;
+import { NB_CONFIG as C, mulberry32, clamp, dist2d, wrapAngle } from './config.js';
+import { buildCarMesh } from './vehicles.js';
 
-  function spawn(sceneArg, x, z, game) {
-    var sc = sceneArg || scene;
-    var mesh = window.NBVehicles.makeCarMesh(0x1a1a22, { police: true });
-    mesh.position.set(x, 0, z);
-    sc.add(mesh);
-    var car = {
-      kind: 'police',
-      mesh: mesh,
-      heading: 0,
-      speed: 0,
-      targetSpeed: 0,
-      ramCd: 0,
-      strobe: null,
-      dispatch: C.policeDispatchDelay, // jeda respons sebelum mulai mengejar
-    };
-    // Lampu strobo di atap (mesh terpisah supaya warnanya bisa berkedip).
-    var strobe = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 0.22, 0.6),
-      new THREE.MeshBasicMaterial({ color: 0xff3b3b })
-    );
-    strobe.position.set(0, 1.62, -0.25);
-    mesh.add(strobe);
-    car.strobe = strobe;
-    if (game) {
-      car.heading = Math.atan2(game.playerPos.x - x, game.playerPos.z - z);
-      mesh.rotation.y = car.heading;
-    }
-    cars.push(car);
-    return car;
-  }
+export function createPolice(world, scene) {
+  const rnd = mulberry32(99);
+  const police = {
+    cars: [],
+    bustTimer: 0,
+    _lightT: 0,
 
-  function removeCar(car) {
-    var idx = cars.indexOf(car);
-    if (idx >= 0) cars.splice(idx, 1);
-    if (scene) scene.remove(car.mesh);
-  }
+    spawn(sceneArg, x, z) {
+      const mesh = buildCarMesh(0x1a1d24, true);
+      mesh.position.set(x, 0, z);
+      const car = {
+        mesh, heading: 0, speed: 0,
+        stuckT: 0, reverseT: 0,
+        lightBar: mesh.getObjectByName('lightbar'),
+        lightPhase: rnd() < 0.5,
+      };
+      (sceneArg || scene).add(mesh);
+      this.cars.push(car);
+      return car;
+    },
 
-  // Samakan jumlah mobil polisi dengan wanted (1 per bintang, maks 5).
-  // Spawn di depan arah hadap pemain (~48 m), supaya terlihat mengejar.
-  function syncWanted(wanted, game) {
-    wanted = Math.max(0, Math.min(C.maxWanted, wanted));
-    while (cars.length < wanted) {
-      var ang = (game.player ? game.player.heading : 0) + (Math.random() - 0.5) * 0.8;
-      var d = game.inCar ? (C.policeSpawnDistCar || 130) : C.policeSpawnDist;
-      var x = game.playerPos.x + Math.sin(ang) * d;
-      var z = game.playerPos.z + Math.cos(ang) * d;
-      // Jepit ke dalam kota & darat.
-      x = Math.max(-200, Math.min(200, x));
-      z = Math.max(-200, Math.min(200, z));
-      if (window.NBWorld.isBlocked(x, z, 1.5)) {
-        // Geser ke jalan terdekat bila titik spawn di dalam gedung.
-        var placed = false;
-        for (var r = 4; r <= 40 && !placed; r += 4) {
-          for (var a = 0; a < 8; a++) {
-            var ax = x + Math.sin(a * Math.PI / 4) * r;
-            var az = z + Math.cos(a * Math.PI / 4) * r;
-            if (!window.NBWorld.isBlocked(ax, az, 1.5)) { x = ax; z = az; placed = true; break; }
+    _spawnNearPlayer(game) {
+      // A random bearing, ~55 m out, on open ground (not inside a building).
+      for (let tries = 0; tries < 8; tries++) {
+        const a = rnd() * Math.PI * 2;
+        const x = game.playerPos.x + Math.sin(a) * C.policeSpawnDist;
+        const z = game.playerPos.z + Math.cos(a) * C.policeSpawnDist;
+        if (Math.abs(x) > 205 || Math.abs(z) > 205) continue;
+        const c = world.collideCircle(x, z, 3);
+        if (Math.abs(c.x - x) > 0.5 || Math.abs(c.z - z) > 0.5) continue;
+        const car = this.spawn(scene, c.x, c.z);
+        car.heading = Math.atan2(game.playerPos.x - c.x, game.playerPos.z - c.z);
+        return car;
+      }
+      return this.spawn(scene, game.playerPos.x + C.policeSpawnDist, game.playerPos.z);
+    },
+
+    setCount(game, n) {
+      n = clamp(n, 0, C.maxWanted);
+      while (this.cars.length < n) this._spawnNearPlayer(game);
+      while (this.cars.length > n) {
+        // Drop the farthest car first.
+        let far = 0, farD = -1;
+        this.cars.forEach((c, i) => {
+          const d = dist2d(c.mesh.position.x, c.mesh.position.z, game.playerPos.x, game.playerPos.z);
+          if (d > farD) { farD = d; far = i; }
+        });
+        const [gone] = this.cars.splice(far, 1);
+        scene.remove(gone.mesh);
+      }
+    },
+
+    clear() {
+      for (const c of this.cars) scene.remove(c.mesh);
+      this.cars.length = 0;
+      this.bustTimer = 0;
+    },
+
+    update(game, dt) {
+      this.setCount(game, game.wanted);
+      const px = game.playerPos.x, pz = game.playerPos.z;
+      const pSpeed = game.playerSpeed || 0;
+      let anyNear = false;
+
+      for (const c of this.cars) {
+        const dx = px - c.mesh.position.x;
+        const dz = pz - c.mesh.position.z;
+        const d = Math.max(0.01, Math.hypot(dx, dz));
+        const wantHeading = Math.atan2(dx, dz);
+        // Steer toward the player, limited turn rate.
+        const dh = wrapAngle(wantHeading - c.heading);
+        // A fast car cannot turn sharply: the turn rate falls with speed,
+        // so a staged police car ahead of the player cannot spin around
+        // and ruin the chase framing in the first seconds.
+        const turnRate = clamp(2.8 - Math.abs(c.speed) * 0.08, 0.7, 2.8);
+        const turn = clamp(dh, -turnRate * dt, turnRate * dt);
+        c.heading += turn;
+        // Arrive behaviour: ease off as we close in, stop beside the player.
+        let target = clamp((d - 3) * 0.55, 0, C.policeTopSpeed);
+        if (c.reverseT > 0) {
+          c.reverseT -= dt;
+          target = -4;
+        }
+        c.speed += clamp(target - c.speed, -10 * dt, 7 * dt);
+        if (Math.abs(c.speed) < 0.05 && target === 0) c.speed = 0;
+        const nx = c.mesh.position.x + Math.sin(c.heading) * c.speed * dt;
+        const nz = c.mesh.position.z + Math.cos(c.heading) * c.speed * dt;
+        let p = world.collideCircle(nx, nz, 1.6);
+        p = world.clampShore(p.x, p.z);
+        const moved = dist2d(p.x, p.z, c.mesh.position.x, c.mesh.position.z);
+        // Stuck recovery: blocked and far from the player -> reverse briefly.
+        if (Math.abs(c.speed) > 3 && moved < Math.abs(c.speed) * dt * 0.25 && d > 12) {
+          c.stuckT += dt;
+          if (c.stuckT > 2) { c.reverseT = 1; c.stuckT = 0; }
+        } else {
+          c.stuckT = 0;
+        }
+        c.mesh.position.x = p.x;
+        c.mesh.position.z = p.z;
+        c.mesh.rotation.y = c.heading;
+        // Flashing red/blue roof bar.
+        this._lightT += dt;
+        if (c.lightBar) {
+          const phase = Math.floor(this._lightT * 2.4 + (c.lightPhase ? 1 : 0)) % 2 === 0;
+          c.lightBar.material.color.setHex(phase ? 0xff2a2a : 0x2a6aff);
+        }
+        // Bust window: close and the player slow.
+        if (d < C.policeBustDist && pSpeed < C.policeBustSpeed) anyNear = true;
+        // Contact damage while touching (low, so BUSTED wins over death).
+        if (d < 2.6 && !game.inCar && game.state === 'playing') {
+          game.damagePlayer(C.policeContactDps * dt, 'police');
+        }
+      }
+
+      if (anyNear && game.state === 'playing' && !game.inCar) {
+        this.bustTimer += dt;
+        if (this.bustTimer >= C.policeBustTime) {
+          this.bustTimer = 0;
+          game.busted();
+        }
+      } else {
+        this.bustTimer = 0;
+      }
+
+      // Wanted decay: no police within 45 m and no fresh crime.
+      if (game.wanted > 0) {
+        let nearest = Infinity;
+        for (const c of this.cars) {
+          nearest = Math.min(nearest, dist2d(c.mesh.position.x, c.mesh.position.z, px, pz));
+        }
+        const clean = game.timeSinceCrime > 4;
+        if ((this.cars.length === 0 || nearest > C.policeLoseDist) && clean) {
+          game._decayT = (game._decayT || 0) + dt;
+          if (game._decayT >= C.wantedDecaySeconds) {
+            game._decayT = 0;
+            game.setWanted(game.wanted - 1);
           }
+        } else {
+          game._decayT = 0;
         }
-        if (!placed) continue;
       }
-      spawn(scene, x, z, game);
-    }
-    while (cars.length > wanted) {
-      // Hapus yang terjauh dulu.
-      var far = null, farD = -1;
-      cars.forEach(function (c) {
-        var dd = Math.hypot(c.mesh.position.x - game.playerPos.x, c.mesh.position.z - game.playerPos.z);
-        if (dd > farD) { farD = dd; far = c; }
-      });
-      if (far) removeCar(far); else break;
-    }
-    if (wanted === 0) {
-      while (cars.length) removeCar(cars[0]);
-      bustTimer = 0;
-    }
-  }
-
-  function angDiff(a, b) {
-    var d = a - b;
-    while (d > Math.PI) d -= Math.PI * 2;
-    while (d < -Math.PI) d += Math.PI * 2;
-    return d;
-  }
-
-  function update(dt, game) {
-    if (game.state !== 'playing') return;
-    var px = game.playerPos.x, pz = game.playerPos.z;
-    var playerSpeed = game.playerSpeed || 0;
-    var anyClose = false;
-    sirenPhase += dt;
-
-    for (var i = 0; i < cars.length; i++) {
-      var car = cars[i];
-      car.ramCd = Math.max(0, car.ramCd - dt);
-      // Jeda respons: mobil baru spawn diam 2 detik (sirene menyala).
-      if (car.dispatch > 0) {
-        car.dispatch -= dt;
-        car.speed = 0;
-        if (car.strobe) {
-          car.strobe.material.color.setHex(Math.sin(sirenPhase * 9 + i * 2.1) > 0 ? 0xff3b3b : 0x3b7bff);
-        }
-        continue;
-      }
-      var dx = px - car.mesh.position.x;
-      var dz = pz - car.mesh.position.z;
-      var dist = Math.hypot(dx, dz);
-      // Belok ke arah pemain (terbatas — radius putar besar).
-      var want = Math.atan2(dx, dz);
-      var diff = angDiff(want, car.heading);
-      var turn = Math.max(-2.4 * dt, Math.min(2.4 * dt, diff));
-      car.heading += turn;
-      // Kecepatan sebanding jarak: pelan saat dekat (tetap menempel),
-      // kencang saat jauh. Inilah yang dulu salah (selalu top speed).
-      var target = Math.max(2.2, Math.min(C.policeTopSpeed, dist * 0.55));
-      car.speed += (target - car.speed) * Math.min(1, dt * 1.6);
-      var nx = car.mesh.position.x + Math.sin(car.heading) * car.speed * dt;
-      var nz = car.mesh.position.z + Math.cos(car.heading) * car.speed * dt;
-      var moved = window.NBWorld.slideMove(car.mesh.position.x, car.mesh.position.z, nx - car.mesh.position.x, nz - car.mesh.position.z, 1.4);
-      car.mesh.position.x = moved.x;
-      car.mesh.position.z = moved.z;
-      car.mesh.rotation.y = car.heading;
-      // Lampu strobo berkedip merah/biru.
-      if (car.strobe) {
-        car.strobe.material.color.setHex(Math.sin(sirenPhase * 9 + i * 2.1) > 0 ? 0xff3b3b : 0x3b7bff);
-      }
-      // Tabrakan ke pemain jalan kaki: damage kecil (BUSTED dulu, bukan mati).
-      if (!game.inCar && dist < 2.0) {
-        game.damagePlayer(C.policeContactDps * dt, 'police');
-      }
-      // Menabrak mobil pemain: perlambat (ram).
-      if (game.inCar && dist < 3.0 && car.ramCd <= 0 && window.NBVehicles.playerCar) {
-        car.ramCd = 0.6;
-        window.NBVehicles.playerCar.speed *= 0.72;
-        game.onCrash();
-      }
-      // Penangkapan: polisi < 5 m DAN pemain lambat (< 3 m/s) selama 2 dtk.
-      if (dist < C.bustDist && playerSpeed < C.bustSpeed) anyClose = true;
-    }
-    // Lampu strobo: ganti warna batang lampu via scale pulsa (murah).
-    if (anyClose) {
-      bustTimer += dt;
-      if (bustTimer >= C.bustTime) {
-        bustTimer = 0;
-        game.busted();
-      }
-    } else {
-      bustTimer = Math.max(0, bustTimer - dt * 2);
-    }
-  }
-
-  window.NBPolice = {
-    cars: cars,
-    spawn: spawn,
-    init: function (sc) { scene = sc; },
-    syncWanted: syncWanted,
-    update: update,
-    clearAll: function () { while (cars.length) removeCar(cars[0]); bustTimer = 0; },
+    },
   };
-})();
+  return police;
+}

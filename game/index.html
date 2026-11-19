@@ -8,108 +8,83 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<canvas id="game-canvas"></canvas>
+<div id="app"></div>
 
-<!-- ===== HUD (selalu di atas canvas) ===== -->
-<div id="hud" class="hidden">
+<!-- In-game HUD -->
+<div id="hud">
   <div id="missionBox">
-    <div id="missionTitle">JOB 1: FIRST PICKUP</div>
-    <div id="missionText">Pergi ke dermaga selatan</div>
-    <div id="timer" class="hidden">100</div>
+    <div id="missionTitle">NEON BAY</div>
+    <div id="missionText">Welcome to Neon Bay.</div>
+    <div id="missionTimer"></div>
   </div>
-  <div id="objGuide">
-    <span id="objArrow">&#9650;</span>
-    <span id="objDist">168 m</span>
-  </div>
+
+  <div id="objGuide"><span id="objArrow">▲</span><span id="objDist">168 m</span></div>
+
+  <div id="toast"></div>
+
   <div id="topRight">
     <div id="money">$0</div>
-    <div id="stars"></div>
+    <div id="stars">☆☆☆☆☆</div>
     <div id="healthBar"><div id="healthFill"></div></div>
+    <div id="healthText">100</div>
   </div>
-  <div id="speed" class="hidden"><span id="speedVal">0</span> mph</div>
-  <div id="crosshair" class="hidden">+</div>
-  <canvas id="minimap" width="168" height="168"></canvas>
-  <div id="mapLegend">
-    <span><i class="lg gold">&#9650;</i> You</span>
-    <span><i class="lg white">&#9679;</i> Objective</span>
-    <span><i class="lg blue">&#9632;</i> Bank</span>
-    <span><i class="lg red">+</i> Hospital</span>
-    <span><i class="lg home">&#8962;</i> Garage</span>
-  </div>
-  <div id="prompt" class="hidden"></div>
-  <div id="controlsHint">WASD move &middot; E car &middot; F punch &middot; Click shoot &middot; SHIFT sprint &middot; SPACE handbrake &middot; P pause &middot; R retry &middot; M mute</div>
-  <div id="toast" class="hidden"></div>
-  <div id="banner" class="hidden"><div id="bannerTitle"></div><div id="bannerSub"></div></div>
-</div>
-<div id="damageFlash"></div>
 
-<!-- ===== Menu utama ===== -->
+  <div id="speedo"><span id="speedVal">0</span> mph</div>
+
+  <div id="minimapWrap">
+    <canvas id="minimap" width="168" height="168"></canvas>
+    <div id="mapLegend">▲ You &nbsp;● Objective &nbsp;■ Bank &nbsp;+ Hospital &nbsp;⌂ Garage<br>Follow the gold beacon. White dots are traffic, red dots are police.</div>
+  </div>
+
+  <div id="prompt"></div>
+  <div id="controlsHint">WASD move / drive &nbsp;·&nbsp; SHIFT sprint &nbsp;·&nbsp; E enter car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; CLICK shoot &nbsp;·&nbsp; SPACE brake &nbsp;·&nbsp; R retry &nbsp;·&nbsp; ESC pause</div>
+  <div id="crosshair">+</div>
+  <div id="damageFlash"></div>
+
+  <div id="banner"><div id="bannerTitle"></div><div id="bannerText"></div></div>
+</div>
+
+<!-- Main menu -->
 <div id="menu">
-  <div class="menu-inner">
+  <div class="menuCard">
     <h1>NEON BAY</h1>
-    <p class="tagline">An open-world crime game. Sunset over the bay, six jobs, one fixer, and the Bay PD on your tail.</p>
-    <p class="story">You are <b>Dex Marlowe</b>, a wheelman with a teal jacket and a pink starter car. <b>Mara Voss</b> has six jobs for you — from a first pickup at the south pier to the big bank job. Steal cars, lose the heat, fight at the docks, and get out clean.</p>
-    <div class="menu-buttons">
-      <button id="btnStart">START</button>
-      <button id="btnContinue">CONTINUE</button>
-      <button id="btnHow">HOW TO PLAY</button>
-      <button id="btnSound">SOUND: ON</button>
-    </div>
-    <p class="foot">A completely original game. No real city, no real people, no borrowed art, music or names.</p>
-  </div>
-</div>
-
-<!-- ===== How to play ===== -->
-<div id="howBox" class="hidden">
-  <div class="panel">
-    <h2>HOW TO PLAY</h2>
-    <p><b>Goal:</b> finish all 6 jobs for Mara Voss, then roam free. Each job pays cash.</p>
-    <p><b>Move:</b> WASD — walk and drive. <b>E</b> enter / exit a car (entering a car is stealing: +1 wanted star). <b>F</b> punch. <b>Mouse click</b> shoot once you have the pistol. <b>SHIFT</b> sprint. <b>SPACE</b> handbrake. <b>R</b> retry the current job. <b>P</b> or <b>ESC</b> pause. <b>M</b> mute.</p>
-    <p><b>Camera:</b> drag the mouse to look around; the wheel zooms. The camera follows you and swings back behind you as you move.</p>
-    <p><b>Wanted:</b> stars rise when you steal a car, punch a pedestrian, or hit one with a car. One police car hunts you per star. Police bust you if one stays within 5 m while you move slower than 3 m/s for 2 seconds. To lose the heat, get more than 45 m away from every police car and stay clean — stars fade one per 20 seconds.</p>
-    <p><b>Minimap:</b> the round map shows the city, the sea to the south, your garage (home), the bank, the hospital, traffic and police. The white dot with a gold ring is your objective; the gold arrow and the distance above the map point at it too. The gold beam in the sky marks the objective from anywhere in the city.</p>
-    <p><b>Health:</b> you heal fully at the start of every job. If you are wasted you pay a $150 fine and wake up at the hospital. If you are busted you pay the same fine and the job restarts.</p>
-    <p><b>Save:</b> your cash and job are saved automatically. CONTINUE resumes them.</p>
-    <button id="btnCloseHow">CLOSE</button>
-  </div>
-</div>
-
-<!-- ===== Pause ===== -->
-<div id="pauseMenu" class="hidden">
-  <div class="panel">
-    <h2>PAUSED</h2>
-    <div class="menu-buttons">
-      <button id="btnResume">RESUME</button>
-      <button id="restartBtn">RESTART JOB</button>
-      <button id="btnPauseSound">SOUND: ON</button>
-      <button id="btnQuit">SAVE &amp; QUIT TO MENU</button>
+    <p class="tagline">An open-world crime story at sunset. Six jobs. One city. No way back.</p>
+    <p class="story">Dex Marlowe is back in Neon Bay, broke and out of options. His fixer Mara Voss has six jobs — a pickup, a hot delivery, a stolen car, a heat problem, a dock fight, and the big one at Meridian Bank. Do them clean, get paid, and maybe the city lets you keep the money.</p>
+    <button id="btnStart">START NEW GAME</button>
+    <button id="btnContinue">CONTINUE</button>
+    <button id="btnHow">HOW TO PLAY</button>
+    <button id="btnSound">SOUND: ON</button>
+    <div id="howBox">
+      <h2>HOW TO PLAY</h2>
+      <p><b>Move / drive:</b> WASD &nbsp;·&nbsp; <b>Sprint:</b> SHIFT &nbsp;·&nbsp; <b>Enter / exit car:</b> E &nbsp;·&nbsp; <b>Punch:</b> F &nbsp;·&nbsp; <b>Shoot (once you have the pistol):</b> CLICK &nbsp;·&nbsp; <b>Handbrake:</b> SPACE &nbsp;·&nbsp; <b>Retry mission:</b> R &nbsp;·&nbsp; <b>Pause:</b> ESC / P &nbsp;·&nbsp; <b>Mute:</b> M &nbsp;·&nbsp; <b>Look:</b> drag mouse &nbsp;·&nbsp; <b>Zoom:</b> wheel</p>
+      <p><b>Wanted:</b> stealing a car, punching or shooting a bystander raises your heat. Police chase you; if one stays close while you are slow for 2 seconds, you are BUSTED. Get over 45 m from every cop car and stay clean — a star fades every 20 seconds.</p>
+      <p><b>Minimap:</b> the gold ▲ is you, the white ● with a gold ring is your objective (it clamps to the edge when far away — follow the gold triangle), the blue ■ is the Bank, the red + is the Hospital, the green ⌂ is your Garage. Follow the gold beacon in the sky to reach your objective.</p>
+      <p><b>Jobs:</b> 1 First Pickup $200 · 2 Hot Delivery $350 (100 s) · 3 Borrowed Wheels $400 · 4 Lose the Heat $500 · 5 Dockside Trouble $600 · 6 The Big One $1,500. Finish all six to become a Neon Bay Legend.</p>
     </div>
   </div>
 </div>
 
-<!-- ===== WASTED / BUSTED ===== -->
-<div id="wasted" class="hidden">
-  <div class="big-death">WASTED</div>
-  <p id="wastedFine">Bay PD fined you $150</p>
-  <button id="wastedContinue">CONTINUE</button>
+<!-- Pause menu -->
+<div id="pauseMenu">
+  <div class="menuCard">
+    <h1>PAUSED</h1>
+    <button id="btnResume">RESUME</button>
+    <button id="restartBtn">RESTART JOB</button>
+    <button id="btnSoundPause">SOUND: ON/OFF</button>
+    <button id="btnQuit">QUIT TO MENU</button>
+  </div>
 </div>
-<div id="busted" class="hidden">
-  <div class="big-death">BUSTED</div>
-  <p id="bustedFine">Bay PD fined you $150</p>
-  <button id="bustedContinue">CONTINUE</button>
+
+<!-- Wasted / busted screen -->
+<div id="deathScreen">
+  <div class="menuCard">
+    <h1 id="deathTitle">WASTED</h1>
+    <p id="deathText"></p>
+    <button id="btnRespawn">RESPAWN AT HOSPITAL</button>
+  </div>
 </div>
 
 <script src="vendor/three.min.js"></script>
-<script src="src/config.js"></script>
-<script src="src/input.js"></script>
-<script src="src/audio.js"></script>
-<script src="src/world.js"></script>
-<script src="src/vehicles.js"></script>
-<script src="src/people.js"></script>
-<script src="src/police.js"></script>
-<script src="src/combat.js"></script>
-<script src="src/missions.js"></script>
-<script src="src/hud.js"></script>
-<script src="src/main.js"></script>
+<script type="module" src="src/main.js"></script>
 </body>
 </html>

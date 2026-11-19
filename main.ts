@@ -1,8 +1,10 @@
-// Neon Bay — entrypoint (Node 22, standard library only).
-// Menyalin game/ dan screenshots/ dari repo ke /output lalu menulis
-// /output/dossier.json dengan pustaka make.fun yang divendor.
-// Di luar container grader, MAKEFUN_OUTPUT_DIR menggantikan /output:
+// Neon Bay — make.fun entrypoint (v5).
+// This file is only plumbing: it hands the game folder and the screenshots
+// folder to the grader's output directory and writes the dossier summary
+// with the vendored make.fun library. The game itself lives in game/.
+// Run it outside the grader's container with:
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+
 import { cpSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,10 +16,15 @@ const out = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 mkdirSync(out, { recursive: true });
 cpSync(join(here, 'game'), join(out, 'game'), { recursive: true });
 mkdirSync(join(out, 'screenshots'), { recursive: true });
-if (existsSync(join(here, 'screenshots'))) cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+if (existsSync(join(here, 'screenshots'))) {
+  cpSync(join(here, 'screenshots'), join(out, 'screenshots'), { recursive: true });
+}
 
-// Batas scorer (kit's gate): teks dossier maks 160 KiB, maks 4 screenshot
-// @ 256 KiB, game/ maks 993 file / 48 MiB, path maks 1000 byte.
+// The scorer's own caps (from the competition's gate): only text_max_bytes
+// shapes the bytes; the rest refuse an entry the scorer would refuse
+// (more than 4 screenshots or one over 256 KiB; more than 993 files in
+// game/ or 48 MiB of game files in all, or a path under game/ over
+// 1000 bytes).
 writeFileSync(
   join(out, 'dossier.json'),
   buildDossier(out, {

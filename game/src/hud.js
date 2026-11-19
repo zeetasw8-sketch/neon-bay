@@ -1,272 +1,284 @@
-// Neon Bay — HUD: uang, bintang, darah, misi, panah + jarak objektif,
-// minimap bulat 168px, prompt, toast, banner, flash damage.
-// Minimap dipetakan dari pusat dunia (0,0): skala = radius / jangkauan,
-// marker objektif dijepit ke tepi lingkaran (R-10) + cincin emas.
-(function () {
-  'use strict';
+// Neon Bay — HUD (v5 rebuild). All DOM: mission box, objective guide,
+// toast, money/stars/health, speed, minimap, legend, prompt, banner, menus.
+// The objective arrow is a pure function of the CURRENT camera direction
+// (from _camPos to the player), never of a smoothed or averaged yaw, and
+// this update runs AFTER the camera moves each tick.
 
-  var C = window.NB_CONFIG;
-  var el = {};
-  var mapCtx = null;
-  var toastTimer = 0;
-  var bannerTimer = 0;
+import { NB_CONFIG as C, wrapAngle, dist2d, clamp } from './config.js';
 
-  function $(id) { return document.getElementById(id); }
+const MAP_R = 84; // minimap circle radius, px
+const MAP_SCALE = MAP_R / C.worldHalf; // 0.3717 px per metre
+const MAP_CLAMP = MAP_R - 10; // objective marker clamps to this radius
 
-  function init() {
-    ['hud', 'missionBox', 'missionTitle', 'missionText', 'timer', 'money', 'stars',
-      'healthBar', 'healthFill', 'speed', 'speedVal', 'crosshair', 'minimap',
-      'mapLegend', 'objGuide', 'objArrow', 'objDist', 'prompt', 'controlsHint',
-      'toast', 'banner', 'bannerTitle', 'bannerSub', 'damageFlash'].forEach(function (id) {
-      el[id] = $(id);
-    });
-    mapCtx = el.minimap.getContext('2d');
-  }
+export function createHud() {
+  const $ = (id) => document.getElementById(id);
+  const hud = {
+    _els: {},
+    _lastMap: 0,
+    _toastUntil: 0,
+    _bannerUntil: 0,
+    _lastFlash: 0,
+    _cache: {},
 
-  function wrapAngle(a) {
-    while (a > Math.PI) a -= Math.PI * 2;
-    while (a < -Math.PI) a += Math.PI * 2;
-    return a;
-  }
+    init() {
+      const ids = ['missionBox', 'missionTitle', 'missionText', 'missionTimer',
+        'toast', 'objGuide', 'objArrow', 'objDist', 'money', 'stars',
+        'healthFill', 'healthText', 'speedo', 'speedVal', 'minimap',
+        'mapLegend', 'prompt', 'controlsHint', 'crosshair', 'damageFlash',
+        'banner', 'bannerTitle', 'bannerText', 'menu', 'pauseMenu',
+        'deathScreen', 'deathTitle', 'deathText', 'howBox', 'btnContinue'];
+      for (const id of ids) this._els[id] = $(id);
+      // The objective guide is a block element (the fix probe reads display).
+      if (this._els.objGuide) this._els.objGuide.style.display = 'block';
+    },
 
-  // Peta dunia -> kanvas minimap (pusat dunia di tengah lingkaran).
-  function toMap(x, z) {
-    var s = C.mapRadius / C.mapRange;
-    return { x: C.mapRadius + x * s, y: C.mapRadius + z * s };
-  }
+    _setText(el, v) {
+      if (!el) return;
+      if (this._cache[el.id] !== v) { this._cache[el.id] = v; el.textContent = v; }
+    },
 
-  function drawMinimap(game) {
-    var ctx = mapCtx;
-    if (!ctx) return;
-    var S = C.mapSize, R = C.mapRadius, cx = R, cy = R;
-    ctx.clearRect(0, 0, S, S);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, 0, Math.PI * 2);
-    ctx.clip();
-    // Latar kota.
-    ctx.fillStyle = '#232338';
-    ctx.fillRect(0, 0, S, S);
-    // Laut (selatan) + pantai: strip biru di bawah.
-    var seaY = toMap(0, C.seaZ).y;
-    ctx.fillStyle = '#14406e';
-    ctx.fillRect(0, seaY, S, S - seaY);
-    ctx.fillStyle = '#b89a5e';
-    ctx.fillRect(0, toMap(0, 196).y, S, seaY - toMap(0, 196).y);
-    // Jalan.
-    ctx.strokeStyle = '#4a4a5a';
-    ctx.lineWidth = 5;
-    C.verticalRoads.forEach(function (x) {
-      var p = toMap(x, 0);
-      ctx.beginPath(); ctx.moveTo(p.x, 0); ctx.lineTo(p.x, S); ctx.stroke();
-    });
-    C.horizontalRoads.forEach(function (z) {
-      var p = toMap(0, z);
-      ctx.beginPath(); ctx.moveTo(0, p.y); ctx.lineTo(S, p.y); ctx.stroke();
-    });
-    // Garasi (hijau), bank (biru), rumah sakit (salib merah).
-    function square(x, z, size, color) {
-      var p = toMap(x, z);
-      ctx.fillStyle = color;
-      ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
-    }
-    square(C.garage.x, C.garage.z, 9, '#7dff9a');
-    square(C.bank.x, C.bank.z, 9, '#5aa2ff');
-    var hp = toMap(C.hospital.x, C.hospital.z);
-    ctx.fillStyle = '#ff5a5a';
-    ctx.fillRect(hp.x - 1.5, hp.y - 5, 3, 10);
-    ctx.fillRect(hp.x - 5, hp.y - 1.5, 10, 3);
-    // Lalu lintas (abu) + polisi (merah/biru).
-    window.NBVehicles.cars.forEach(function (c) {
-      var p = toMap(c.mesh.position.x, c.mesh.position.z);
-      ctx.fillStyle = '#9a9a9a';
-      ctx.fillRect(p.x - 1.5, p.y - 1.5, 3, 3);
-    });
-    window.NBPolice.cars.forEach(function (c, i) {
-      var p = toMap(c.mesh.position.x, c.mesh.position.z);
-      ctx.fillStyle = i % 2 ? '#3b7bff' : '#ff3b3b';
-      ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, Math.PI * 2); ctx.fill();
-    });
-    // Objektif: lingkaran putih + cincin emas, dijepit ke tepi (R-10).
-    var obj = window.NBWorld.objectivePos();
-    var beaconVisible = window.NBWorld.beacon && window.NBWorld.beacon.visible;
-    if (beaconVisible && obj) {
-      var op = toMap(obj.x, obj.z);
-      var dx = op.x - cx, dy = op.y - cy;
-      var dist = Math.hypot(dx, dy);
-      var maxR = R - 10;
-      if (dist > maxR) { op.x = cx + (dx / dist) * maxR; op.y = cy + (dy / dist) * maxR; }
-      var ux = dx / (dist || 1), uy = dy / (dist || 1);
-      // Segitiga emas penunjuk arah (di luar marker).
-      var tx = op.x + ux * 11, ty = op.y + uy * 11;
-      ctx.fillStyle = '#ffb300';
-      ctx.beginPath();
-      ctx.moveTo(tx + ux * 6, ty + uy * 6);
-      ctx.lineTo(tx - uy * 4 - ux * 2, ty + ux * 4 - uy * 2);
-      ctx.lineTo(tx + uy * 4 - ux * 2, ty - ux * 4 - uy * 2);
-      ctx.closePath(); ctx.fill();
-      // Lingkaran putih (denyut halus) + cincin emas.
-      var pulse = 5.5 + Math.sin(performance.now() * 0.005) * 1.2;
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(4.5, pulse), 0, Math.PI * 2); ctx.fill();
-      ctx.strokeStyle = '#ffb300';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(op.x, op.y, Math.max(4.5, pulse) + 2.5, 0, Math.PI * 2); ctx.stroke();
-    }
-    // Pemain: segitiga emas searah heading.
-    var pp = toMap(game.playerPos.x, game.playerPos.z);
-    var fx = Math.sin(game.player.heading), fz = Math.cos(game.player.heading);
-    var px2 = pp.x + fx * 7, py2 = pp.y + fz * 7;
-    var bx = pp.x - fx * 5, by = pp.y - fz * 5;
-    var perpX = fz, perpY = -fx;
-    ctx.fillStyle = '#ffb300';
-    ctx.beginPath();
-    ctx.moveTo(px2, py2);
-    ctx.lineTo(bx + perpX * 4.5, by + perpY * 4.5);
-    ctx.lineTo(bx - perpX * 4.5, by - perpY * 4.5);
-    ctx.closePath(); ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1;
-    ctx.stroke();
-    // Penanda utara.
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 11px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('N', cx, 13);
-    ctx.restore();
-    // Bingkai lingkaran.
-    ctx.strokeStyle = 'rgba(255,179,0,0.85)';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(cx, cy, R - 1, 0, Math.PI * 2); ctx.stroke();
-  }
+    setMission(title, text, timer) {
+      this._setText(this._els.missionTitle, title);
+      this._setText(this._els.missionText, text);
+      this.setMissionTimer(timer);
+    },
 
-  function update(game, dt) {
-    // Uang + bintang + darah.
-    el.money.textContent = '$' + Math.floor(game.cash);
-    var stars = '';
-    for (var i = 0; i < C.maxWanted; i++) stars += i < game.wanted ? '★' : '☆';
-    el.stars.textContent = stars;
-    // Misi + timer.
-    var m = window.NBMissions;
-    var active = m.active;
-    if (active) {
-      el.missionTitle.textContent = active.title;
-      // Teks tahap aktif (lebih spesifik dari brief).
-      var stageText = '';
-      if (m.phase === 'toPier') stageText = 'Pergi ke dermaga selatan';
-      else if (m.phase === 'pickup' && active.title.indexOf('JOB 2') === 0) stageText = 'Naik mobil apa saja';
-      else if (m.phase === 'toBuyer') stageText = 'Antar ke pembeli di utara';
-      else if (m.phase === 'steal') stageText = 'Curi sebuah mobil (E untuk masuk)';
-      else if (m.phase === 'toHome') stageText = 'Kembali ke garasi';
-      else if (m.phase === 'loseheat') stageText = 'Jauhi polisi sampai bintang hilang';
-      else if (m.phase === 'fight') stageText = game.hasGun ? 'Kalahkan 3 preman di dermaga' : 'Ambil pistol di dermaga, kalahkan 3 preman';
-      else if (m.phase === 'toBank') stageText = 'Pergi ke bank';
-      else if (m.phase === 'escape') stageText = 'Kabur ke garasi dengan wanted 0';
-      else if (m.phase === 'pickup') stageText = 'Paket diamankan!';
-      el.missionText.textContent = stageText || active.brief || '';
-      if (m.timer > 0) {
-        el.timer.classList.remove('hidden');
-        el.timer.textContent = Math.ceil(m.timer) + 's';
-      } else {
-        el.timer.classList.add('hidden');
+    setMissionTimer(t) {
+      const v = t > 0 ? `${Math.ceil(t)}s` : '';
+      this._setText(this._els.missionTimer, v);
+    },
+
+    setMoney(cash) {
+      this._setText(this._els.money, `$${cash}`);
+    },
+
+    setWanted(n) {
+      let s = '';
+      for (let i = 0; i < C.maxWanted; i++) s += i < n ? '★' : '☆';
+      this._setText(this._els.stars, s);
+    },
+
+    setHealth(hp, max) {
+      const pct = clamp(hp / max, 0, 1) * 100;
+      if (this._els.healthFill) this._els.healthFill.style.width = `${pct}%`;
+      this._setText(this._els.healthText, `${Math.ceil(hp)}`);
+    },
+
+    toast(text, seconds) {
+      const el = this._els.toast;
+      if (!el) return;
+      el.textContent = text;
+      el.style.display = 'block';
+      this._toastUntil = performance.now() + (seconds || 3) * 1000;
+    },
+
+    showBanner(title, text) {
+      const el = this._els.banner;
+      if (!el) return;
+      this._setText(this._els.bannerTitle, title);
+      this._setText(this._els.bannerText, text || '');
+      el.style.display = 'block';
+      this._bannerUntil = performance.now() + 3500;
+    },
+
+    flashDamage() {
+      const now = performance.now();
+      if (now - this._lastFlash < 333) return; // at most 3 flashes a second
+      this._lastFlash = now;
+      const el = this._els.damageFlash;
+      if (!el) return;
+      el.style.opacity = '0.45';
+      setTimeout(() => { el.style.opacity = '0'; }, 120);
+    },
+
+    showMenu(show, hasSave) {
+      if (this._els.menu) this._els.menu.style.display = show ? 'flex' : 'none';
+      if (this._els.btnContinue) this._els.btnContinue.style.display = hasSave ? 'block' : 'none';
+    },
+
+    showPause(show) {
+      if (this._els.pauseMenu) this._els.pauseMenu.style.display = show ? 'flex' : 'none';
+    },
+
+    showDeath(show, title, text) {
+      if (!this._els.deathScreen) return;
+      if (show) {
+        this._setText(this._els.deathTitle, title);
+        this._setText(this._els.deathText, text);
       }
-    } else if (m.pendingNext > 0) {
-      el.missionTitle.textContent = 'JOB COMPLETE';
-      el.missionText.textContent = 'Job berikutnya datang...';
-      el.timer.classList.add('hidden');
-    } else {
-      el.missionTitle.textContent = 'FREE ROAM';
-      el.missionText.textContent = 'Semua job selesai. The bay is yours.';
-      el.timer.classList.add('hidden');
-    }
-    // Kecepatan (saat menyetir).
-    if (game.inCar && window.NBVehicles.playerCar) {
-      el.speed.classList.remove('hidden');
-      el.speedVal.textContent = Math.round(Math.abs(window.NBVehicles.playerCar.speed) * 2.24);
-    } else {
-      el.speed.classList.add('hidden');
-    }
-    // Crosshair bila bersenjata.
-    if (game.hasGun && game.state === 'playing') el.crosshair.classList.remove('hidden');
-    else el.crosshair.classList.add('hidden');
-    // Panah + jarak objektif.
-    var beaconVisible = window.NBWorld.beacon && window.NBWorld.beacon.visible;
-    if (beaconVisible && game.state === 'playing' && active) {
-      var obj = window.NBWorld.objectivePos();
-      var dx = obj.x - game.playerPos.x;
-      var dz = obj.z - game.playerPos.z;
-      var dist = Math.hypot(dx, dz);
-      var bearing = Math.atan2(dx, dz);
-      // Arah pandang kamera AKTUAL (dari posisi kamera ke pemain), bukan yaw
-      // yang dihaluskan: saat drag cepat / fps rendah, _camYawSmooth bisa
-      // menyimpang dari arah pandang sebenarnya (posisi kamera di-lerp
-      // sepanjang chord, bukan busur), sehingga panah sempat menunjuk arah
-      // yang salah di dekat ±180°. Bila kamera terlalu dekat dengan pemain
-      // (transit chord), pakai yaw yang dihaluskan sebagai cadangan.
-      var cdx = game.playerPos.x - game._camPos.x;
-      var cdz = game.playerPos.z - game._camPos.z;
-      var camFwd = (cdx * cdx + cdz * cdz) > 0.25
-        ? Math.atan2(cdx, cdz) : game.camYawAbs();
-      var rel = wrapAngle(bearing - camFwd);
-      el.objGuide.style.display = 'flex';
-      el.objDist.textContent = Math.round(dist) + ' m';
-      el.objArrow.style.transform = 'rotate(' + (-rel * 180 / Math.PI) + 'deg)';
-    } else {
-      el.objGuide.style.display = 'none';
-    }
-    // Prompt interaksi (mobil terdekat).
-    if (game.state === 'playing') {
-      if (game.inCar) {
-        el.prompt.classList.remove('hidden');
-        el.prompt.textContent = 'Press E to exit car';
-      } else {
-        var near = window.NBVehicles.nearestCar(game.playerPos.x, game.playerPos.z, C.carEnterRadius);
-        if (near) {
-          el.prompt.classList.remove('hidden');
-          el.prompt.textContent = 'Press E to steal car — ' + Math.round(near.dist) + 'm';
+      this._els.deathScreen.style.display = show ? 'flex' : 'none';
+    },
+
+    // The objective arrow: bearing to the objective minus the camera's
+    // ACTUAL view bearing (from _camPos to the player), wrapped to +-180.
+    // No history, no smoothing — a pure function of this frame's camera.
+    update(game, dt) {
+      const now = performance.now();
+      if (this._els.toast && now > this._toastUntil) this._els.toast.style.display = 'none';
+      if (this._els.banner && now > this._bannerUntil) this._els.banner.style.display = 'none';
+
+      // --- objective guide ---
+      const obj = game.world.objectivePos();
+      const guide = this._els.objGuide;
+      if (guide && game.state === 'playing' && game.missions.active) {
+        const px = game.playerPos.x, pz = game.playerPos.z;
+        const bearing = Math.atan2(obj.x - px, obj.z - pz);
+        const cdx = px - game._camPos.x, cdz = pz - game._camPos.z;
+        const viewBearing = (cdx * cdx + cdz * cdz) > 0.25
+          ? Math.atan2(cdx, cdz)
+          : game._camYawSmooth;
+        const rel = wrapAngle(bearing - viewBearing);
+        const rot = -rel * 180 / Math.PI;
+        if (this._els.objArrow) this._els.objArrow.style.transform = `rotate(${rot.toFixed(1)}deg)`;
+        const d = Math.round(dist2d(px, pz, obj.x, obj.z));
+        this._setText(this._els.objDist, `${d} m`);
+        guide.style.display = 'block';
+      } else if (guide) {
+        guide.style.display = 'none';
+      }
+
+      // --- speed ---
+      if (this._els.speedo) {
+        if (game.inCar && game.vehicles.playerCar) {
+          const mph = Math.round(Math.abs(game.vehicles.playerCar.speed) * 2.237);
+          this._setText(this._els.speedVal, `${mph}`);
+          this._els.speedo.style.display = 'block';
         } else {
-          el.prompt.classList.add('hidden');
+          this._els.speedo.style.display = 'none';
         }
       }
-    } else {
-      el.prompt.classList.add('hidden');
-    }
-    // Toast + banner (hitung mundur).
-    if (toastTimer > 0) {
-      toastTimer -= dt;
-      if (toastTimer <= 0) el.toast.classList.add('hidden');
-    }
-    if (bannerTimer > 0) {
-      bannerTimer -= dt;
-      if (bannerTimer <= 0) el.banner.classList.add('hidden');
-    }
-    drawMinimap(game);
-  }
 
-  window.NBHud = {
-    init: init,
-    update: update,
-    setHealth: function (hp, maxHp) {
-      if (!el.healthFill) return;
-      var pct = Math.max(0, Math.min(100, (hp / maxHp) * 100));
-      el.healthFill.style.width = pct + '%';
-      el.healthFill.style.background = pct > 50
-        ? 'linear-gradient(90deg,#37d67a,#7dff9a)'
-        : pct > 25 ? 'linear-gradient(90deg,#d6a437,#ffd97a)' : 'linear-gradient(90deg,#d63737,#ff7a7a)';
+      // --- crosshair: only when armed and on foot ---
+      if (this._els.crosshair) {
+        this._els.crosshair.style.display = (game.hasGun && !game.inCar && game.state === 'playing') ? 'block' : 'none';
+      }
+
+      // --- car prompt ---
+      if (this._els.prompt) {
+        if (game.state === 'playing' && !game.inCar) {
+          const car = game.vehicles.nearestCar(px0(game), pz0(game), C.enterRadius);
+          if (car) {
+            const d = Math.round(dist2d(game.playerPos.x, game.playerPos.z, car.mesh.position.x, car.mesh.position.z));
+            this._setText(this._els.prompt, `Press E to steal car — ${d}m`);
+            this._els.prompt.style.display = 'block';
+          } else {
+            this._els.prompt.style.display = 'none';
+          }
+        } else {
+          this._els.prompt.style.display = 'none';
+        }
+      }
+
+      // --- minimap, redrawn at most every 150 ms ---
+      if (now - this._lastMap > 150) {
+        this._lastMap = now;
+        this._drawMinimap(game);
+      }
     },
-    toast: function (text, seconds) {
-      el.toast.textContent = text;
-      el.toast.classList.remove('hidden');
-      toastTimer = seconds || 3;
-    },
-    banner: function (title, sub) {
-      el.bannerTitle.textContent = title;
-      el.bannerSub.textContent = sub || '';
-      el.banner.classList.remove('hidden');
-      bannerTimer = 2.5;
-    },
-    flash: function (opacity) {
-      el.damageFlash.style.opacity = opacity;
+
+    _drawMinimap(game) {
+      const cv = this._els.minimap;
+      if (!cv) return;
+      const ctx = cv.getContext('2d');
+      const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
+      const toMap = (x, z) => [cx + x * MAP_SCALE, cy + z * MAP_SCALE];
+      ctx.clearRect(0, 0, W, H);
+      // Sea + beach along the south edge.
+      ctx.fillStyle = '#0d3b5c';
+      ctx.fillRect(0, cy + 175 * MAP_SCALE, W, H);
+      ctx.fillStyle = '#8a6f4d';
+      ctx.fillRect(0, cy + 168 * MAP_SCALE, W, cy + 175 * MAP_SCALE - (cy + 168 * MAP_SCALE));
+      // City disc.
+      ctx.beginPath();
+      ctx.arc(cx, cy, MAP_R, 0, Math.PI * 2);
+      ctx.fillStyle = '#12141a';
+      ctx.fill();
+      ctx.save();
+      ctx.clip();
+      // Roads.
+      ctx.strokeStyle = '#3a3d47';
+      ctx.lineWidth = 14 * MAP_SCALE;
+      for (const L of C.roadLines) {
+        const [x0] = toMap(L, 0);
+        ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke();
+        const [, z0] = toMap(0, L);
+        ctx.beginPath(); ctx.moveTo(0, z0); ctx.lineTo(W, z0); ctx.stroke();
+      }
+      // Blocks.
+      ctx.fillStyle = '#1e212a';
+      for (const bx of [-140, -70, 0, 70, 140]) {
+        for (const bz of [-140, -70, 0, 70, 140]) {
+          const [x, z] = toMap(bx - 28, bz - 28);
+          ctx.fillRect(x, z, 56 * MAP_SCALE, 56 * MAP_SCALE);
+        }
+      }
+      // Garage (green), bank (blue), hospital (red cross).
+      const [gx, gz] = toMap(C.garage.x, C.garage.z);
+      ctx.fillStyle = '#2e7d4f';
+      ctx.fillRect(gx - 4, gz - 4, 8, 8);
+      const [bx2, bz2] = toMap(C.bank.x, C.bank.z);
+      ctx.fillStyle = '#2a6aff';
+      ctx.fillRect(bx2 - 4, bz2 - 4, 8, 8);
+      const [hx, hz] = toMap(C.hospital.x, C.hospital.z);
+      ctx.fillStyle = '#ff2a2a';
+      ctx.fillRect(hx - 1.5, hz - 5, 3, 10);
+      ctx.fillRect(hx - 5, hz - 1.5, 10, 3);
+      // Traffic dots.
+      ctx.fillStyle = '#c8c8c8';
+      for (const c of game.vehicles.cars) {
+        const [x, z] = toMap(c.mesh.position.x, c.mesh.position.z);
+        ctx.fillRect(x - 1, z - 1, 2, 2);
+      }
+      // Police dots.
+      ctx.fillStyle = '#ff5252';
+      for (const c of game.police.cars) {
+        const [x, z] = toMap(c.mesh.position.x, c.mesh.position.z);
+        ctx.beginPath(); ctx.arc(x, z, 2.5, 0, Math.PI * 2); ctx.fill();
+      }
+      // Objective: big white circle + gold ring, CLAMPED to the edge so a
+      // far objective is never clipped away (the round-2 root cause).
+      const obj = game.world.objectivePos();
+      if (game.missions.active) {
+        const ox = obj.x * MAP_SCALE, oz = obj.z * MAP_SCALE;
+        const d = Math.hypot(ox, oz);
+        const cd = d > MAP_CLAMP ? MAP_CLAMP : d;
+        const ux = d > 0 ? ox / d : 0, uz = d > 0 ? oz / d : 0;
+        const mx = cx + ux * cd, my = cy + uz * cd;
+        const pulse = 6 + Math.sin(performance.now() / 300) * 1.5;
+        ctx.beginPath(); ctx.arc(mx, my, pulse + 2.5, 0, Math.PI * 2);
+        ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.beginPath(); ctx.arc(mx, my, pulse, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff'; ctx.fill();
+        if (d > MAP_CLAMP) {
+          // Small gold triangle pointing outward, past the edge.
+          ctx.fillStyle = '#ffb300';
+          ctx.beginPath();
+          ctx.moveTo(cx + ux * (MAP_R - 2), cy + uz * (MAP_R - 2));
+          ctx.lineTo(cx + ux * (MAP_R - 9) - uz * 4, cy + uz * (MAP_R - 9) + ux * 4);
+          ctx.lineTo(cx + ux * (MAP_R - 9) + uz * 4, cy + uz * (MAP_R - 9) - ux * 4);
+          ctx.closePath(); ctx.fill();
+        }
+      }
+      // Player arrow (gold), pointing along the heading.
+      const [px2, pz2] = toMap(game.playerPos.x, game.playerPos.z);
+      const h = game.player.heading;
+      ctx.fillStyle = '#ffe14d';
+      ctx.beginPath();
+      ctx.moveTo(px2 + Math.sin(h) * 6, pz2 + Math.cos(h) * 6);
+      ctx.lineTo(px2 + Math.sin(h + 2.5) * 5, pz2 + Math.cos(h + 2.5) * 5);
+      ctx.lineTo(px2 + Math.sin(h - 2.5) * 5, pz2 + Math.cos(h - 2.5) * 5);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+      // Rim + north.
+      ctx.beginPath(); ctx.arc(cx, cy, MAP_R, 0, Math.PI * 2);
+      ctx.strokeStyle = '#555a66'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#e8e8e8';
+      ctx.font = 'bold 11px sans-serif';
+      ctx.fillText('N', cx - 4, cy - MAP_R + 12);
     },
   };
-})();
+  return hud;
+}
+
+function px0(game) { return game.playerPos.x; }
+function pz0(game) { return game.playerPos.z; }
