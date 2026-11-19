@@ -1,135 +1,152 @@
-// Neon Bay — synthesized sound (v5 rebuild). Everything is WebAudio: no
-// audio files, no network. A quiet synthwave bass loop, an engine hum that
-// follows speed, a two-tone police siren, and one-shot effects.
+// Neon Bay — sound, synthesised live with WebAudio. No audio files.
+// Everything is built from oscillators and noise buffers so the game has
+// no downloads and no licensed music. The context is created lazily on
+// the first user gesture, so it never blocks page load.
 
-export const AudioSys = {
-  ctx: null,
-  muted: false,
-  _engineOsc: null,
-  _engineGain: null,
-  _sirenOsc: null,
-  _sirenGain: null,
-  _musicTimer: null,
-  _musicStep: 0,
+// initAudio creates the shared AudioContext on first use.
+function initAudio() {
+  if (ctx) return;
+  try {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    master = ctx.createGain();
+    master.gain.value = muted ? 0 : 0.35;
+    master.connect(ctx.destination);
+  } catch (e) { ctx = null; }
+}
 
-  init() {
-    // AudioContext must start from a user gesture; create it lazily and
-    // resume it on the first interaction.
-    const resume = () => { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume(); };
-    window.addEventListener('pointerdown', resume);
-    window.addEventListener('keydown', resume);
-  },
+// resumeAudio wakes the context after a user gesture (browsers start
+// suspended). Called from the menu click and from every key press.
+function resumeAudio() {
+  initAudio();
+  if (ctx && ctx.state === 'suspended') ctx.resume();
+}
 
-  ensure() {
-    if (this.ctx) return true;
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return false;
-      this.ctx = new AC();
-      this._startEngine();
-      this._startMusic();
-    } catch (e) { return false; }
-    return !!this.ctx;
-  },
+// tone plays a short oscillator blip. `type` is the waveform ('sine',
+// 'square', 'sawtooth', 'triangle'), `freq` the start pitch, `slideTo`
+// the end pitch (0 = no slide), `dur` the length in seconds, `vol` 0..1.
+function tone(type, freq, slideTo, dur, vol) {
+  if (!ctx || muted) return;
+  var o = ctx.createOscillator(), g = ctx.createGain();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, ctx.currentTime);
+  if (slideTo) o.frequency.exponentialRampToValueAtTime(Math.max(1, slideTo), ctx.currentTime + dur);
+  g.gain.setValueAtTime(vol, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  o.connect(g); g.connect(master);
+  o.start(); o.stop(ctx.currentTime + dur);
+}
 
-  setMuted(m) {
-    this.muted = m;
-    if (this.ctx) this.ctx.suspend();
-    if (!m && this.ctx) this.ctx.resume();
-  },
+// noise plays a burst of filtered white noise for `dur` seconds.
+function noise(dur, vol, cutoff) {
+  if (!ctx || muted) return;
+  var len = Math.floor(ctx.sampleRate * dur);
+  var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  var data = buf.getChannelData(0);
+  for (var i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+  var src = ctx.createBufferSource(), f = ctx.createBiquadFilter(), g = ctx.createGain();
+  src.buffer = buf;
+  f.type = 'lowpass'; f.frequency.value = cutoff || 900;
+  g.gain.value = vol;
+  src.connect(f); f.connect(g); g.connect(master);
+  src.start();
+}
 
-  _startEngine() {
-    const ctx = this.ctx;
-    this._engineOsc = ctx.createOscillator();
-    this._engineOsc.type = 'sawtooth';
-    this._engineOsc.frequency.value = 55;
-    this._engineGain = ctx.createGain();
-    this._engineGain.gain.value = 0.0;
-    const lp = ctx.createBiquadFilter();
-    lp.type = 'lowpass'; lp.frequency.value = 420;
-    this._engineOsc.connect(lp); lp.connect(this._engineGain); this._engineGain.connect(ctx.destination);
-    this._engineOsc.start();
-  },
+// startEngine begins the looping engine drone (two detuned saws through a
+// lowpass). It is silent until the player drives; setEngine drives it.
+function startEngine() {
+  initAudio();
+  if (!ctx || engineOsc) return;
+  engineOsc = ctx.createOscillator(); engineOsc.type = 'sawtooth'; engineOsc.frequency.value = 55;
+  engineOsc2 = ctx.createOscillator(); engineOsc2.type = 'sawtooth'; engineOsc2.frequency.value = 83;
+  engineGain = ctx.createGain(); engineGain.gain.value = 0;
+  engineFilter = ctx.createBiquadFilter(); engineFilter.type = 'lowpass'; engineFilter.frequency.value = 320;
+  engineOsc.connect(engineFilter); engineOsc2.connect(engineFilter);
+  engineFilter.connect(engineGain); engineGain.connect(master);
+  engineOsc.start(); engineOsc2.start();
+}
 
-  setEngine(speed01) {
-    if (!this.ctx || !this._engineOsc) return;
-    const t = this.ctx.currentTime;
-    this._engineOsc.frequency.setTargetAtTime(55 + speed01 * 130, t, 0.08);
-    this._engineGain.gain.setTargetAtTime(this.muted ? 0 : 0.015 + speed01 * 0.05, t, 0.1);
-  },
+// setEngine sets the engine drone pitch and loudness from speed (0..1).
+function setEngine(speed01) {
+  if (!engineOsc || !ctx) return;
+  var t = ctx.currentTime;
+  engineOsc.frequency.setTargetAtTime(52 + speed01 * 130, t, 0.08);
+  engineOsc2.frequency.setTargetAtTime(78 + speed01 * 190, t, 0.08);
+  engineGain.gain.setTargetAtTime(0.02 + speed01 * 0.06, t, 0.1);
+}
 
-  setSiren(on) {
-    if (!this.ctx) return;
-    if (on && !this._sirenOsc) {
-      const ctx = this.ctx;
-      this._sirenOsc = ctx.createOscillator();
-      this._sirenOsc.type = 'triangle';
-      this._sirenOsc.frequency.value = 660;
-      this._sirenGain = ctx.createGain();
-      this._sirenGain.gain.value = 0.0;
-      this._sirenOsc.connect(this._sirenGain); this._sirenGain.connect(ctx.destination);
-      this._sirenOsc.start();
-      this._sirenGain.gain.setTargetAtTime(this.muted ? 0 : 0.035, ctx.currentTime, 0.1);
-      this._sirenAlt = setInterval(() => {
-        if (!this._sirenOsc) return;
-        this._sirenOsc.frequency.value = this._sirenOsc.frequency.value > 700 ? 520 : 880;
-      }, 420);
-    } else if (!on && this._sirenOsc) {
-      clearInterval(this._sirenAlt);
-      try { this._sirenOsc.stop(); } catch (e) {}
-      this._sirenOsc = null;
-      this._sirenGain = null;
-    }
-  },
+// stopEngine silences the engine drone.
+function stopEngine() {
+  if (engineGain && ctx) engineGain.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+}
 
-  _blip(freq, dur, type, vol, slideTo) {
-    if (!this.ctx || this.muted) return;
-    const ctx = this.ctx;
-    const o = ctx.createOscillator();
-    o.type = type || 'sine';
-    o.frequency.setValueAtTime(freq, ctx.currentTime);
-    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, ctx.currentTime + dur);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(vol || 0.08, ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + dur);
-    o.connect(g); g.connect(ctx.destination);
-    o.start(); o.stop(ctx.currentTime + dur + 0.02);
-  },
+// playSiren plays the two-tone police siren.
+function playSiren() { tone('sine', 620, 940, 0.45, 0.1); }
 
-  _noise(dur, vol, filterFreq) {
-    if (!this.ctx || this.muted) return;
-    const ctx = this.ctx;
-    const len = Math.floor(ctx.sampleRate * dur);
-    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-    const d = buf.getChannelData(0);
-    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    const f = ctx.createBiquadFilter();
-    f.type = 'lowpass'; f.frequency.value = filterFreq || 1200;
-    const g = ctx.createGain();
-    g.gain.value = vol || 0.12;
-    src.connect(f); f.connect(g); g.connect(ctx.destination);
-    src.start();
-  },
+// playGunshot plays a sharp crack.
+function playGunshot() { noise(0.16, 0.5, 2600); }
 
-  gunshot() { this._noise(0.16, 0.22, 2600); this._blip(160, 0.1, 'square', 0.06, 60); },
-  punch() { this._noise(0.09, 0.16, 500); this._blip(120, 0.08, 'sine', 0.12, 55); },
-  crash() { this._noise(0.3, 0.2, 700); },
-  cash() { this._blip(880, 0.12, 'sine', 0.09); setTimeout(() => this._blip(1318, 0.18, 'sine', 0.09), 90); },
-  pickup() { this._blip(660, 0.1, 'sine', 0.08, 990); },
-  missionDone() { [523, 659, 784].forEach((f, i) => setTimeout(() => this._blip(f, 0.16, 'sine', 0.09), i * 110)); },
-  busted() { this._blip(440, 0.5, 'sawtooth', 0.08, 110); },
+// playPunch plays a dull thud.
+function playPunch() { noise(0.09, 0.35, 500); tone('sine', 140, 60, 0.09, 0.25); }
 
-  _startMusic() {
-    // Slow synthwave bass: A minor walk, one note per beat, quiet.
-    const notes = [110, 110, 130.81, 98, 110, 110, 164.81, 146.83];
-    this._musicTimer = setInterval(() => {
-      if (!this.ctx || this.muted || this.ctx.state !== 'running') return;
-      const f = notes[this._musicStep % notes.length];
-      this._musicStep++;
-      this._blip(f, 0.5, 'triangle', 0.035);
-      this._blip(f / 2, 0.5, 'sine', 0.03);
-    }, 480);
-  },
+// playCrash plays a metallic bang.
+function playCrash() { noise(0.35, 0.45, 750); tone('square', 110, 45, 0.3, 0.2); }
+
+// playCash plays the cash-register chime on a mission payout.
+function playCash() { tone('sine', 880, 0, 0.12, 0.22); setTimeout(function () { tone('sine', 1318, 0, 0.22, 0.22); }, 110); }
+
+// playMission plays the mission-complete jingle (four rising notes).
+function playMission() {
+  var notes = [523, 659, 784, 1046];
+  for (var i = 0; i < notes.length; i++) {
+    (function (f, delay) {
+      setTimeout(function () { tone('sine', f, 0, 0.22, 0.22); }, delay);
+    })(notes[i], i * 110);
+  }
+}
+
+// playWasted plays the low death sting.
+function playWasted() { tone('sawtooth', 220, 55, 0.9, 0.25); }
+
+// playBusted plays the descending "caught" sting.
+function playBusted() { tone('square', 330, 110, 0.7, 0.2); }
+
+// startMusic begins the quiet synthwave bass loop (dusk ambience).
+function startMusic() {
+  initAudio();
+  if (!ctx || musicTimer) return;
+  var bass = [55, 55, 65.4, 49, 55, 55, 73.4, 82.4];
+  var step = 0;
+  musicTimer = setInterval(function () {
+    if (muted || !ctx) return;
+    tone('triangle', bass[step % bass.length], 0, 0.42, 0.05);
+    step++;
+  }, 430);
+}
+
+// stopMusic silences the bass loop.
+function stopMusic() {
+  if (musicTimer) { clearInterval(musicTimer); musicTimer = null; }
+}
+
+// setMuted toggles all sound on or off.
+function setMuted(m) {
+  muted = !!m;
+  if (master && ctx) master.gain.value = muted ? 0 : 0.35;
+}
+
+// isMuted reports the current mute state.
+function isMuted() { return muted; }
+
+var ctx = null, master = null, muted = false;
+var engineOsc = null, engineOsc2 = null, engineGain = null, engineFilter = null;
+var musicTimer = null;
+
+window.NBAudio = {
+  initAudio: initAudio, resumeAudio: resumeAudio,
+  startEngine: startEngine, setEngine: setEngine, stopEngine: stopEngine,
+  playSiren: playSiren, playGunshot: playGunshot, playPunch: playPunch,
+  playCrash: playCrash, playCash: playCash, playMission: playMission,
+  playWasted: playWasted, playBusted: playBusted,
+  startMusic: startMusic, stopMusic: stopMusic,
+  setMuted: setMuted, isMuted: isMuted
 };

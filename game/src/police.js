@@ -1,155 +1,230 @@
-// Neon Bay — police (v5 rebuild). One car per wanted star. A police car
-// steers toward the player but eases off as it closes in (an arrive
-// behaviour), so it can sit beside the player and bust them instead of
-// overshooting at full speed — the P1-1 fix. Contact damage is low on
-// purpose, so BUSTED lands before death. If every police car is farther
-// than 45 m and the player stays clean, a star fades every 20 s.
+// Neon Bay — the police: cops who chase, catch and bust the player.
+// One cop per wanted star. Wanted 1 walks; wanted 2-3 drive cruisers.
+// A cop gives up (despawns) beyond 80 m on foot or 180 m in a car, and
+// gets stuck on buildings like everything else — that is how a runner
+// escapes. A cop within 5 m of a slow player (< 3 m/s) for 2 s busts
+// them; a cop in contact deals 8 hp/s.
 
-import { NB_CONFIG as C, mulberry32, clamp, dist2d, wrapAngle } from './config.js';
-import { buildCarMesh } from './vehicles.js';
+// chasePlayer moves one cop toward the player for one step and handles
+// give-up, contact damage and the bust timer. Returns 'busted', 'gaveup'
+// or 'chasing'.
+function chasePlayer(cop, player, dt, world, game) {
+  var C = NBConfig;
+  var dx = player.x - cop.x, dz = player.z - cop.z;
+  var d = Math.sqrt(dx * dx + dz * dz);
+  var giveUp = cop.isCar ? C.copGiveUpCar : C.copGiveUpFoot;
+  if (d > giveUp) return 'gaveup';
 
-export function createPolice(world, scene) {
-  const rnd = mulberry32(99);
-  const police = {
-    cars: [],
-    bustTimer: 0,
-    _lightT: 0,
+  var top = cop.isCar ? C.copCarSpeed : C.copWalkSpeed;
+  var step = top * dt;
+  if (cop.isCar) {
+    // a cruiser steers toward the player but stops at buildings
+    var want = Math.atan2(dx, dz);
+    var diff = normAngle(want - cop.heading);
+    cop.heading += Math.max(-2.2 * dt, Math.min(2.2 * dt, diff));
+    var fx = Math.sin(cop.heading), fz = Math.cos(cop.heading);
+    var px = cop.x + fx * step, pz = cop.z + fz * step;
+    if (!NBWorld.collides(world, px, pz, C.carRadius)) { cop.x = px; cop.z = pz; }
+    cop.mesh.position.set(cop.x, 0, cop.z);
+    cop.mesh.rotation.y = cop.heading;
+  } else {
+    var nx = cop.x + (dx / d) * step;
+    var nz = cop.z + (dz / d) * step;
+    if (!NBWorld.collides(world, nx, nz, 0.6)) { cop.x = nx; cop.z = nz; }
+    cop.mesh.position.set(cop.x, 0, cop.z);
+    cop.mesh.rotation.y = Math.atan2(dx, dz);
+    cop.walkPhase += dt * 9;
+    cop.mesh.position.y = Math.abs(Math.sin(cop.walkPhase)) * 0.05;
+  }
 
-    spawn(sceneArg, x, z) {
-      const mesh = buildCarMesh(0x1a1d24, true);
-      mesh.position.set(x, 0, z);
-      const car = {
-        mesh, heading: 0, speed: 0,
-        stuckT: 0, reverseT: 0,
-        lightBar: mesh.getObjectByName('lightbar'),
-        lightPhase: rnd() < 0.5,
-      };
-      (sceneArg || scene).add(mesh);
-      this.cars.push(car);
-      return car;
-    },
+  // contact damage: a cop leaning on the player hurts (8 hp/s)
+  if (d < 2.2) {
+    NBPeople.hurtPlayer(game, C.contactDamage * dt);
+    if (game.health <= 0) return 'chasing';
+  }
 
-    _spawnNearPlayer(game) {
-      // A random bearing, ~55 m out, on open ground (not inside a building).
-      for (let tries = 0; tries < 8; tries++) {
-        const a = rnd() * Math.PI * 2;
-        const x = game.playerPos.x + Math.sin(a) * C.policeSpawnDist;
-        const z = game.playerPos.z + Math.cos(a) * C.policeSpawnDist;
-        if (Math.abs(x) > 205 || Math.abs(z) > 205) continue;
-        const c = world.collideCircle(x, z, 3);
-        if (Math.abs(c.x - x) > 0.5 || Math.abs(c.z - z) > 0.5) continue;
-        const car = this.spawn(scene, c.x, c.z);
-        car.heading = Math.atan2(game.playerPos.x - c.x, game.playerPos.z - c.z);
-        return car;
-      }
-      return this.spawn(scene, game.playerPos.x + C.policeSpawnDist, game.playerPos.z);
-    },
-
-    setCount(game, n) {
-      n = clamp(n, 0, C.maxWanted);
-      while (this.cars.length < n) this._spawnNearPlayer(game);
-      while (this.cars.length > n) {
-        // Drop the farthest car first.
-        let far = 0, farD = -1;
-        this.cars.forEach((c, i) => {
-          const d = dist2d(c.mesh.position.x, c.mesh.position.z, game.playerPos.x, game.playerPos.z);
-          if (d > farD) { farD = d; far = i; }
-        });
-        const [gone] = this.cars.splice(far, 1);
-        scene.remove(gone.mesh);
-      }
-    },
-
-    clear() {
-      for (const c of this.cars) scene.remove(c.mesh);
-      this.cars.length = 0;
-      this.bustTimer = 0;
-    },
-
-    update(game, dt) {
-      this.setCount(game, game.wanted);
-      const px = game.playerPos.x, pz = game.playerPos.z;
-      const pSpeed = game.playerSpeed || 0;
-      let anyNear = false;
-
-      for (const c of this.cars) {
-        const dx = px - c.mesh.position.x;
-        const dz = pz - c.mesh.position.z;
-        const d = Math.max(0.01, Math.hypot(dx, dz));
-        const wantHeading = Math.atan2(dx, dz);
-        // Steer toward the player, limited turn rate.
-        const dh = wrapAngle(wantHeading - c.heading);
-        // A fast car cannot turn sharply: the turn rate falls with speed,
-        // so a staged police car ahead of the player cannot spin around
-        // and ruin the chase framing in the first seconds.
-        const turnRate = clamp(2.8 - Math.abs(c.speed) * 0.08, 0.7, 2.8);
-        const turn = clamp(dh, -turnRate * dt, turnRate * dt);
-        c.heading += turn;
-        // Arrive behaviour: ease off as we close in, stop beside the player.
-        let target = clamp((d - 3) * 0.55, 0, C.policeTopSpeed);
-        if (c.reverseT > 0) {
-          c.reverseT -= dt;
-          target = -4;
-        }
-        c.speed += clamp(target - c.speed, -10 * dt, 7 * dt);
-        if (Math.abs(c.speed) < 0.05 && target === 0) c.speed = 0;
-        const nx = c.mesh.position.x + Math.sin(c.heading) * c.speed * dt;
-        const nz = c.mesh.position.z + Math.cos(c.heading) * c.speed * dt;
-        let p = world.collideCircle(nx, nz, 1.6);
-        p = world.clampShore(p.x, p.z);
-        const moved = dist2d(p.x, p.z, c.mesh.position.x, c.mesh.position.z);
-        // Stuck recovery: blocked and far from the player -> reverse briefly.
-        if (Math.abs(c.speed) > 3 && moved < Math.abs(c.speed) * dt * 0.25 && d > 12) {
-          c.stuckT += dt;
-          if (c.stuckT > 2) { c.reverseT = 1; c.stuckT = 0; }
-        } else {
-          c.stuckT = 0;
-        }
-        c.mesh.position.x = p.x;
-        c.mesh.position.z = p.z;
-        c.mesh.rotation.y = c.heading;
-        // Flashing red/blue roof bar.
-        this._lightT += dt;
-        if (c.lightBar) {
-          const phase = Math.floor(this._lightT * 2.4 + (c.lightPhase ? 1 : 0)) % 2 === 0;
-          c.lightBar.material.color.setHex(phase ? 0xff2a2a : 0x2a6aff);
-        }
-        // Bust window: close and the player slow.
-        if (d < C.policeBustDist && pSpeed < C.policeBustSpeed) anyNear = true;
-        // Contact damage while touching (low, so BUSTED wins over death).
-        if (d < 2.6 && !game.inCar && game.state === 'playing') {
-          game.damagePlayer(C.policeContactDps * dt, 'police');
-        }
-      }
-
-      if (anyNear && game.state === 'playing' && !game.inCar) {
-        this.bustTimer += dt;
-        if (this.bustTimer >= C.policeBustTime) {
-          this.bustTimer = 0;
-          game.busted();
-        }
-      } else {
-        this.bustTimer = 0;
-      }
-
-      // Wanted decay: no police within 45 m and no fresh crime.
-      if (game.wanted > 0) {
-        let nearest = Infinity;
-        for (const c of this.cars) {
-          nearest = Math.min(nearest, dist2d(c.mesh.position.x, c.mesh.position.z, px, pz));
-        }
-        const clean = game.timeSinceCrime > 4;
-        if ((this.cars.length === 0 || nearest > C.policeLoseDist) && clean) {
-          game._decayT = (game._decayT || 0) + dt;
-          if (game._decayT >= C.wantedDecaySeconds) {
-            game._decayT = 0;
-            game.setWanted(game.wanted - 1);
-          }
-        } else {
-          game._decayT = 0;
-        }
-      }
-    },
-  };
-  return police;
+  // bust: within 5 m while the player is slow (< 3 m/s) for 2 s
+  var pSpeed = playerSpeed(player);
+  if (d < C.bustRange && pSpeed < C.bustStill) {
+    cop.bustTimer += dt;
+    if (cop.bustTimer >= C.bustHold) return 'busted';
+  } else {
+    cop.bustTimer = 0;
+  }
+  return 'chasing';
 }
+
+// playerSpeed returns the player's current speed in m/s (car or foot).
+function playerSpeed(player) {
+  if (player.car) return Math.abs(player.car.speed);
+  return player.moving ? (player.sprinting ? NBConfig.runSpeed : NBConfig.walkSpeed) : 0;
+}
+
+// normAngle wraps an angle to [-PI, +PI].
+function normAngle(a) {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+}
+
+// createCopMesh builds a cop on foot: dark blue uniform, cap.
+function createCopMesh() {
+  var g = NBPeople.createPersonMesh(0x1a2a5a, 1.05);
+  var cap = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.24, 0.26, 0.1, 10),
+    new THREE.MeshLambertMaterial({ color: 0x0a1230 })
+  );
+  cap.position.y = 1.82;
+  g.add(cap);
+  return g;
+}
+
+// spawnCop places one cop at the spawn distance from the player, at an
+// angle spread so several cops form a V as they close in. Wanted 1
+// walks; wanted 2-3 drive.
+function spawnCop(scene, world, player, wanted, index, total) {
+  var C = NBConfig;
+  var isCar = wanted >= 2;
+  var dist = isCar ? C.copSpawnCar : C.copSpawnFoot;
+  var spread = total > 1 ? (index - (total - 1) / 2) * 0.55 : 0;
+  var baseAngle = Math.atan2(player.x, player.z) + Math.PI; // behind player
+  var a = baseAngle + spread;
+  var x = player.x + Math.sin(a) * dist;
+  var z = player.z + Math.cos(a) * dist;
+  var p = NBWorld.clampToCity(x, z);
+  x = p.x; z = p.z;
+  var mesh, car = null;
+  if (isCar) {
+    mesh = NBVehicles.createCarMesh(0xf0f0f0, true);
+    mesh.position.set(x, 0, z);
+    car = { mesh: mesh, x: x, z: z, heading: Math.atan2(player.x - x, player.z - z), speed: 0, wheels: mesh.userData.wheels };
+    mesh.rotation.y = car.heading;
+  } else {
+    mesh = createCopMesh();
+    mesh.position.set(x, 0, z);
+  }
+  scene.add(mesh);
+  var bar = mesh.userData.bar || null;
+  return {
+    mesh: mesh, car: car, x: x, z: z, heading: car ? car.heading : 0,
+    isCar: isCar, bustTimer: 0, walkPhase: 0, bar: bar, flashT: 0, flashOn: false
+  };
+}
+
+// spawn places one police cruiser at (x, z) and registers it in the
+// cops list. The shot tool uses it to stage a V formation; the cops
+// then chase the player through the normal update.
+function spawn(scene, x, z) {
+  var mesh = NBVehicles.createCarMesh(0xf0f0f0, true);
+  mesh.position.set(x, 0, z);
+  scene.add(mesh);
+  var cop = {
+    mesh: mesh, car: null, x: x, z: z, heading: Math.PI,
+    isCar: true, bustTimer: 0, walkPhase: 0,
+    bar: mesh.userData.bar || null, flashT: 0, flashOn: false,
+    speed: 0
+  };
+  cars.push(cop);
+  return cop;
+}
+
+// updatePolice advances every cop, spawns cops up to the wanted level,
+// removes cops who gave up, and returns 'busted' when the player is
+// caught (the game then handles the BUSTED screen).
+function updatePolice(list, dt, world, player, game, scene) {
+  var wanted = game.wanted;
+  while (list.length < wanted) {
+    list.push(spawnCop(scene, world, player, wanted, list.length, wanted));
+  }
+  while (list.length > wanted) {
+    var extra = list.pop();
+    scene.remove(extra.mesh);
+  }
+  for (var i = list.length - 1; i >= 0; i--) {
+    var cop = list[i];
+    flashLightBar(cop, dt);
+    var res = chasePlayer(cop, player, dt, world, game);
+    if (res === 'busted') return 'busted';
+    if (res === 'gaveup') {
+      scene.remove(cop.mesh);
+      list.splice(i, 1);
+    }
+  }
+  return 'ok';
+}
+
+// flashLightBar alternates the cruiser's red and blue lamps.
+function flashLightBar(cop, dt) {
+  if (!cop.bar) return;
+  cop.flashT += dt;
+  if (cop.flashT < 0.35) return;
+  cop.flashT = 0;
+  cop.flashOn = !cop.flashOn;
+  var red = cop.bar.children[0], blue = cop.bar.children[1];
+  red.material.color.setHex(cop.flashOn ? 0xff2020 : 0x661111);
+  blue.material.color.setHex(cop.flashOn ? 0x112266 : 0x2040ff);
+}
+
+// setWanted sets the wanted level (0-3) and plays the siren on a rise.
+function setWanted(game, n) {
+  var old = game.wanted;
+  game.wanted = Math.max(0, Math.min(NBConfig.maxWanted, n));
+  if (game.wanted > old) {
+    NBAudio.playSiren();
+    game.cleanTimer = 0;
+  }
+  if (game.wanted === 0) game.cleanTimer = 0;
+}
+
+// updateHeat decays the wanted level: one star per 22 clean seconds
+// (no cop within 45 m). Called every frame by the game loop.
+function updateHeat(game, dt, list) {
+  if (game.wanted <= 0) return;
+  var near = false;
+  for (var i = 0; i < list.length; i++) {
+    var dx = list[i].x - game.player.x, dz = list[i].z - game.player.z;
+    if (dx * dx + dz * dz < NBConfig.heatCheckRange * NBConfig.heatCheckRange) { near = true; break; }
+  }
+  if (near) { game.cleanTimer = 0; return; }
+  game.cleanTimer += dt;
+  if (game.cleanTimer >= NBConfig.heatDecay) {
+    game.cleanTimer = 0;
+    setWanted(game, game.wanted - 1);
+  }
+}
+
+// bustPlayer handles a BUSTED: fine, wanted cleared, player respawned at
+// the hospital. The fine is taken BEFORE the save is written.
+function bustPlayer(game) {
+  game.cash = Math.max(0, game.cash - NBConfig.fine);
+  game.wanted = 0;
+  game.cleanTimer = 0;
+  game.health = 100;
+  game.player.x = NBConfig.respawn.x;
+  game.player.z = NBConfig.respawn.z;
+  game.player.mesh.position.set(game.player.x, 0, game.player.z);
+  game.player.mesh.visible = true;
+  if (game.playerCar) {
+    game.playerCar = null;
+    game.player.car = null;
+    game.inCar = false;
+    NBAudio.stopEngine();
+  }
+  NBInput.clearAll();
+  NBAudio.playBusted();
+}
+
+var cars = [];
+
+window.NBPolice = {
+  chasePlayer: chasePlayer,
+  spawnCop: spawnCop,
+  spawn: spawn,
+  updatePolice: updatePolice,
+  setWanted: setWanted,
+  updateHeat: updateHeat,
+  bustPlayer: bustPlayer,
+  playerSpeed: playerSpeed,
+  normAngle: normAngle,
+  cars: cars
+};

@@ -1,93 +1,98 @@
-// Neon Bay — keyboard + mouse input (v5 rebuild).
-// Keys are stored twice: by e.code (KeyW, ShiftLeft) and by the lowercased
-// e.key (w, shift). Sprint checks the lowercased 'shift', which is the D4
-// fix: the browser reports the modifier as 'Shift' with a capital S, so a
-// check for the lowercase name alone used to miss it.
+// Neon Bay — keyboard and mouse input.
+// Keys are read by e.code (never e.key: Shift would turn 'w' into 'W').
+// The input state is exposed read-only; the game consumes one-frame
+// "pressed" edges, the menu consumes clicks, the camera consumes drags.
 
-export const Input = {
-  down: new Set(), // currently held keys
-  pressed: new Set(), // keys pressed since the last tick (edges)
-  dragDX: 0, // accumulated horizontal mouse drag since the last tick
-  dragDY: 0,
-  wheelDelta: 0, // accumulated wheel since the last tick
-  clicked: false, // a real click (down+up, barely moved) since last tick
-  dragging: false,
+// readMoveInput returns the current WASD / arrow movement as { x, z }:
+// +x east, +z south, already normalised (no diagonal speed boost).
+function readMoveInput() {
+  var x = 0, z = 0;
+  if (held.KeyW || held.ArrowUp) z -= 1;
+  if (held.KeyS || held.ArrowDown) z += 1;
+  if (held.KeyA || held.ArrowLeft) x -= 1;
+  if (held.KeyD || held.ArrowRight) x += 1;
+  if (x !== 0 && z !== 0) { x *= 0.7071; z *= 0.7071; }
+  return { x: x, z: z };
+}
 
-  _downPos: null,
-  _downTime: 0,
-  _moved: 0,
+// isSprinting reports whether the run key (Shift) is held.
+function isSprinting() {
+  return !!held.ShiftLeft || !!held.ShiftRight;
+}
 
-  init() {
-    window.addEventListener('keydown', (e) => {
-      if (e.repeat) return;
-      const k = (e.key || '').toLowerCase();
-      this.down.add(e.code);
-      if (k) this.down.add(k);
-      this.pressed.add(e.code);
-      if (k) this.pressed.add(k);
-      // Keep game keys from scrolling the page.
-      if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
-    });
-    window.addEventListener('keyup', (e) => {
-      const k = (e.key || '').toLowerCase();
-      this.down.delete(e.code);
-      if (k) this.down.delete(k);
-    });
-    window.addEventListener('blur', () => this.clear());
-    window.addEventListener('mousedown', (e) => {
-      if (e.button !== 0) return;
-      this.dragging = true;
-      this._downPos = { x: e.clientX, y: e.clientY };
-      this._downTime = performance.now();
-      this._moved = 0;
-    });
-    window.addEventListener('mousemove', (e) => {
-      if (!this.dragging) return;
-      const dx = e.movementX || 0;
-      const dy = e.movementY || 0;
-      this.dragDX += dx;
-      this.dragDY += dy;
-      this._moved += Math.abs(dx) + Math.abs(dy);
-    });
-    window.addEventListener('mouseup', (e) => {
-      if (e.button !== 0 || !this.dragging) return;
-      this.dragging = false;
-      // A click is a press that barely moved: dragging to look must not
-      // fire the pistol.
-      if (this._moved < 6 && performance.now() - this._downTime < 600) this.clicked = true;
-      this._downPos = null;
-    });
-    window.addEventListener('wheel', (e) => { this.wheelDelta += e.deltaY; }, { passive: true });
-    window.addEventListener('contextmenu', (e) => e.preventDefault());
-  },
+// consumePressed returns true once for a key pressed this frame and
+// clears the edge, so one physical press never fires twice.
+function consumePressed(code) {
+  if (pressed[code]) { pressed[code] = false; return true; }
+  return false;
+}
 
-  isDown(name) {
-    return this.down.has(name);
-  },
+// wasClicked returns true once for a left mouse button press this frame.
+function wasClicked() {
+  if (clicked) { clicked = false; return true; }
+  return false;
+}
 
-  // True once for the frame in which the key went down.
-  wasPressed(name) {
-    return this.pressed.has(name);
-  },
+// getDrag returns the accumulated mouse-drag delta since the last call
+// ({ dx, dy } in pixels) and zeroes the accumulator.
+function getDrag() {
+  var d = { dx: dragDX, dy: dragDY };
+  dragDX = 0; dragDY = 0;
+  return d;
+}
 
-  // End of tick: forget edges and per-frame mouse deltas.
-  endTick() {
-    this.pressed.clear();
-    this.dragDX = 0;
-    this.dragDY = 0;
-    this.wheelDelta = 0;
-    this.clicked = false;
-  },
+// getWheel returns the accumulated mouse-wheel delta since the last call.
+function getWheel() {
+  var w = wheelDY;
+  wheelDY = 0;
+  return w;
+}
 
-  // Hard reset: used when the death screen appears and on resume, so a
-  // stale Escape or movement key can never leak into the next state.
-  clear() {
-    this.down.clear();
-    this.pressed.clear();
-    this.dragDX = 0;
-    this.dragDY = 0;
-    this.wheelDelta = 0;
-    this.clicked = false;
-    this.dragging = false;
-  },
+// clearAll forgets every held key and edge (used on death and respawn so a
+// key held through the death screen does not act on the fresh life).
+function clearAll() {
+  held = {}; pressed = {}; clicked = false; dragDX = 0; dragDY = 0;
+}
+
+var held = {};
+var pressed = {};
+var clicked = false;
+var dragDX = 0, dragDY = 0, wheelDY = 0;
+var dragging = false;
+
+window.addEventListener('keydown', function (e) {
+  if (!held[e.code]) pressed[e.code] = true; // edge on first press only
+  held[e.code] = true;
+  if (e.code === 'Space') e.preventDefault();
+});
+
+window.addEventListener('keyup', function (e) { held[e.code] = false; });
+
+window.addEventListener('mousedown', function (e) {
+  if (e.button !== 0) return;
+  clicked = true;
+  dragging = true;
+});
+
+window.addEventListener('mouseup', function () { dragging = false; });
+
+window.addEventListener('mousemove', function (e) {
+  if (!dragging) return;
+  dragDX += e.movementX || 0;
+  dragDY += e.movementY || 0;
+});
+
+window.addEventListener('wheel', function (e) { wheelDY += e.deltaY || 0; });
+
+window.addEventListener('blur', clearAll);
+
+window.NBInput = {
+  readMoveInput: readMoveInput,
+  isSprinting: isSprinting,
+  consumePressed: consumePressed,
+  wasClicked: wasClicked,
+  getDrag: getDrag,
+  getWheel: getWheel,
+  clearAll: clearAll,
+  held: held
 };

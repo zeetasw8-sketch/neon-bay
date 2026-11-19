@@ -1,180 +1,161 @@
-// Neon Bay — shared tuning constants and mission data (v5 rebuild).
-// Every number below comes from the prose spec and the Chrome-review fix
-// notes: the city grid, the landmark positions, the D1-D8 fixes and the
-// arrow rules. Nothing here is copied from an earlier build.
+// Neon Bay — tuning and mission data.
+// This file is pure data plus two tiny lookups. Nothing here runs the game:
+// it is read by the world, vehicle, police, mission and HUD modules.
 
-export const NB_CONFIG = {
-  maxHealth: 100,
-  maxWanted: 5,
-  fine: 150,
+// missionById returns the definition for one of the six jobs (0-based).
+function missionById(id) {
+  return NBConfig.missions[id];
+}
 
-  // --- player on foot ---
-  walkSpeed: 4.6,
-  sprintSpeed: 8.5,
-  playerRadius: 0.6,
+// missionReward returns the dollar reward of one job (0-based).
+function missionReward(id) {
+  return NBConfig.missions[id].reward;
+}
 
-  // --- cars (arcade) ---
-  carTopSpeed: 32, // m/s, about 72 mph on the HUD
-  carAccel: 12,
-  carBrake: 22,
-  carReverseTop: 8,
-  carTurn: 1.9, // rad/s at full steer
-  enterRadius: 8, // E works from this far (D7)
+var NBConfig = {
 
-  // --- world ---
-  worldHalf: 226, // minimap maps -226..226 onto the R=84 circle
-  roadHalf: 7, // roads are 14 m wide
-  roadLines: [-175, -105, -35, 35, 105, 175],
-  blockPitch: 70,
-  blockHalf: 28, // blocks are 56 m across
-  shoreZ: 206, // invisible wall: the sea starts here (D2)
-  pierCorridor: { x0: 143, x1: 157, zMax: 209 }, // the pier stays walkable
-
-  // --- landmarks ---
-  garage: { x: 0, z: 120, r: 24 }, // home base, finish radius > half width
-  garageSpawn: { x: 0, z: 120 },
+  // ---- city geometry (metres; x east, z south) ----
+  cityHalf: 200,
+  blocks: 5,          // 5x5 blocks
+  blockSize: 70,      // block pitch
+  roadWidth: 14,
+  roadAt: [-175, -105, -35, 35, 105, 175],
+  garage: { x: 0, z: 120, w: 34, d: 20 },
   bank: { x: -70, z: -70, w: 26, d: 22 },
-  bankPickup: { x: -70, z: -54, r: 8 }, // OUTSIDE the bank, in front of it
-  pierPickup: { x: 150, z: 196, r: 8 },
-  buyer: { x: 35, z: -175, r: 24 }, // far north end of the avenue
-  hospital: { x: 140, z: 140 },
-  docks: { x: 150, z: 190 }, // where the JOB 5 thugs wait
-  starterCar: { x: 18, z: 142 }, // pink starter car, by the garage
+  hospital: { x: 140, z: -92 },
+  pier: { x: 150, z: 196 },     // south pier pickup, ~168 m from spawn
+  seaWallZ: 206,                // water begins beyond this z
+  pierMinX: 143, pierMaxX: 157, // pier corridor may run to z 209
+  pierTipZ: 209,
+  spawn: { x: 0, z: 108 },
+  respawn: { x: 140, z: -92 },  // hospital door
 
-  // --- police ---
-  policeSpawnDist: 70, // far enough that a bust takes >8 s to land
-  policeTopSpeed: 11,
-  policeBustDist: 5,
-  policeBustSpeed: 3, // player must be slower than this to be busted
-  policeBustTime: 2,
-  policeContactDps: 10, // low enough that BUSTED lands before death
-  policeLoseDist: 45, // farther than this, heat starts to fade
-  wantedDecaySeconds: 20, // one star per 20 s while clean and far
+  // ---- player ----
+  walkSpeed: 6,            // m/s on foot
+  runSpeed: 9,             // m/s while Shift held
+  playerHealth: 100,
+  maxHealth: 100,
+  punchRange: 3,           // metres
+  punchDamage: 2,          // 2 punches down a thug (HP 4)
+  pistolDamage: 4,         // 1 shot down a thug (HP 4)
+  punchCooldown: 0.42,     // seconds
+  shootCooldown: 0.38,     // seconds
+  gunRange: 60,
+  bulletSpread: 0.012,
 
-  // --- combat ---
-  thugHp: 3,
-  thugCount: 3,
-  punchDamage: 2,
-  punchRange: 2.6,
-  pistolDamage: 3,
-  thugPunchDamage: 5,
-  thugChaseDist: 35,
-  thugSpeed: 3.4,
-
-  // --- traffic / pedestrians (counts stay as specced) ---
+  // ---- cars ----
+  carMaxSpeed: 38,         // m/s, ~85 mph
+  carAccel: 16,
+  carReverseMax: 10,
+  carSteer: 1.9,
+  carGrip: 0.86,
+  carRadius: 2.3,
+  carEnterRange: 4,
   trafficCount: 10,
+  carCost: 800,
+
+  // ---- pedestrians / thugs ----
   pedCount: 16,
+  pedSpeed: 1.4,
+  thugHealth: 4,
+  thugDamage: 5,           // per hit
+  thugCooldown: 1.4,       // seconds between hits
+  thugChaseRange: 35,      // metres; only then do they approach
+  thugSpread: 5.0,         // min distance thugs keep from each other (wide arc)
 
-  // --- camera ---
-  camDistDefault: 9,
-  camDistMin: 5,
-  camDistMax: 16,
-  camPitchDefault: 0.32,
-  camPitchMin: 0.08,
-  camPitchMax: 1.1,
-  camSmoothK: 7, // exponential smoothing rate for the camera yaw
-  camPosK: 10, // exponential smoothing rate for the camera position
-  dragSensitivity: 0.015, // rad per pixel of mouse drag
+  // ---- police ----
+  copWalkSpeed: 11,        // m/s on foot — faster than a walking player
+  copCarSpeed: 18,         // m/s in a cruiser
+  copGiveUpFoot: 80,       // metres: give up on foot beyond this
+  copGiveUpCar: 180,       // metres: give up in a car beyond this
+  copSpawnFoot: 70,        // metres away on foot
+  copSpawnCar: 140,        // metres away in a car
+  bustRange: 5,            // metres
+  bustStill: 3,            // player speed under this counts as still
+  bustHold: 2,             // seconds inside range while still = BUSTED
+  contactDamage: 8,        // hp per second a cop stays in contact
+  heatDecay: 22,           // clean seconds (no cop within 45 m) per -1 star
+  heatCheckRange: 45,
+  maxWanted: 3,
+  fine: 150,               // paid on WASTED and on BUSTED
 
-  // --- beacon (D1) ---
-  beaconHeight: 260,
-  beaconRadiusTop: 7,
-  beaconRadiusBottom: 9,
-  beaconColor: 0xffb300, // saturated deep gold, NormalBlending
-  beaconOpacity: 0.85,
-  beaconFadeNear: 12, // camera closer than this: fully faded
-  beaconFadeFar: 47, // camera farther than this: full strength
+  // ---- money ----
+  startCash: 0,
 
-  // --- lighting (D6: dusk that stays readable) ---
-  skyColor: 0x2b1748, // static purple dusk, no day/night cycle
-  hemiIntensity: 1.05,
-  sunIntensity: 1.9,
-  fogColor: 0x2b1748,
-
-  // --- missions ---
+  // ---- missions (title, Mara's line, reward) ----
   missions: [
     {
-      title: 'JOB 1 — FIRST PICKUP',
-      reward: 200,
-      intro: 'Mara: "Dex. First job. A package is waiting on the south pier. Bring it back to the garage — no questions, no cops."',
-      stages: [
-        { phase: 'toPier', text: 'Pick up the package at the south pier. Follow the gold beacon.', x: 150, z: 196, r: 8 },
-        { phase: 'toHome', text: 'Package secured. Back to the garage.', x: 0, z: 120, r: 24 },
-      ],
+      id: 0, title: 'FIRST PICKUP', reward: 200,
+      intro: "Mara: Dex, pick up my package at the south pier. Follow the gold beacon.",
+      start: 'Pick up the package at the south pier',
+      complete: 'Package secured. Back to the garage.',
+      pickup: { x: 150, z: 196, r: 8 },
+      drop: { x: 0, z: 120, r: 22 },
+      target: null
     },
     {
-      title: 'JOB 2 — HOT DELIVERY',
-      reward: 350,
-      timer: 100, // the text must say 100 s, never 90
-      intro: 'Mara: "Hot delivery, Dex. A buyer is waiting at the far north end of the avenue. 100 seconds — drive, don\'t walk."',
-      stages: [
-        { phase: 'toBuyer', text: 'Deliver the package to the buyer at the far north end. 100 seconds!', x: 35, z: -175, r: 24 },
-      ],
+      id: 1, title: 'HOT DELIVERY', reward: 350, timer: 100,
+      intro: 'Mara: Hot cargo, Dex. 100 seconds to the drop. Drive like you mean it.',
+      start: 'Pick up the hot cargo at the garage',
+      complete: 'Deliver it to the drop-off — 100 seconds!',
+      pickup: { x: 0, z: 120, r: 12 },
+      drop: { x: 35, z: -160, r: 12 },
+      target: { x: 35, z: -160, label: 'DROP-OFF' }
     },
     {
-      title: 'JOB 3 — BORROWED WHEELS',
-      reward: 400,
-      intro: 'Mara: "We need wheels. Any car will do — take one and bring it to the garage."',
-      stages: [
-        { phase: 'steal', text: 'Steal any car. If you are already driving one, it counts.' },
-        { phase: 'toHome', text: 'Bring the car to the garage.', x: 0, z: 120, r: 24, needCar: true },
-      ],
+      id: 2, title: 'BORROWED WHEELS', reward: 400,
+      intro: 'Mara: I need wheels, Dex. Borrow any car on the street and bring it home.',
+      start: 'Steal any car and bring it to the garage',
+      complete: 'The car is ours. Back to the garage.',
+      pickup: null, drop: { x: 0, z: 120, r: 22 },
+      target: null
     },
     {
-      title: 'JOB 4 — LOSE THE HEAT',
-      reward: 500,
-      forceWanted: 2,
-      intro: 'Mara: "Two stars, Dex. Lose them. Get more than 45 metres from every cop car and stay clean — a star fades every 20 seconds."',
-      stages: [
-        { phase: 'loseheat', text: 'Lose the heat: stay over 45 m from all police and stay clean. Stars fade one per 20 s.' },
-      ],
+      id: 3, title: 'LOSE THE HEAT', reward: 500, timer: 150, forceWanted: 2,
+      intro: 'Mara: Two stars, Dex. Get more than 45 metres from every cop and stay clean.',
+      start: 'Lose the cops — stay clean until the heat dies',
+      complete: 'Heat is gone. Back to the garage.',
+      pickup: null, drop: { x: 0, z: 120, r: 22 },
+      target: null
     },
     {
-      title: 'JOB 5 — DOCKSIDE TROUBLE',
-      reward: 600,
-      giveGun: true,
-      thugs: 3,
-      intro: 'Mara: "Three punks are shaking down the docks. Here — take the pistol. CLICK to shoot, F to punch."',
-      stages: [
-        { phase: 'fight', text: 'Deal with the 3 thugs at the docks. Pistol or fists.', x: 150, z: 190, r: 30 },
-      ],
+      id: 4, title: 'DOCKSIDE TROUBLE', reward: 600,
+      intro: 'Mara: Three thugs are shaking down my pier crew. Sort them out, Dex.',
+      start: 'Deal with the three thugs at the docks',
+      complete: 'Docks are clear. Back to the garage.',
+      pickup: null, drop: { x: 0, z: 120, r: 22 },
+      target: { x: 150, z: 178, label: 'DOCKS' },
+      thugs: [
+        { x: 140, z: 180 }, { x: 155, z: 185 }, { x: 150, z: 170 }
+      ]
     },
     {
-      title: 'JOB 6 — THE BIG ONE',
-      reward: 1500,
-      timer: 240,
-      forceWantedAfterPickup: 3,
-      intro: 'Mara: "The big one, Dex. Grab the case at Meridian Bank — the pickup is right outside the front door — then lose the heat and get home. 240 seconds."',
-      stages: [
-        { phase: 'toBank', text: 'Grab the case at Meridian Bank. The pickup is outside the front door.', x: -70, z: -54, r: 8 },
-        { phase: 'escape', text: 'Case grabbed! Lose the 3 stars, then reach the garage. The job only counts when you are home AND clean.', x: 0, z: 120, r: 24, needClean: true },
-      ],
-    },
+      id: 5, title: 'THE BIG ONE', reward: 1500, timer: 240,
+      intro: 'Mara: The big one, Dex. Grab the case at the bank, then get home CLEAN.',
+      start: 'Grab the case at the bank',
+      complete: 'Case secured. Get home with NO wanted stars.',
+      pickup: { x: -70, z: -54, r: 8 },  // in front of the bank entrance
+      drop: { x: 0, z: 120, r: 22 },
+      target: { x: -70, z: -54, label: 'BANK' }
+    }
   ],
+
+  // ---- screenshot labels (exact wording, one honest label per shot) ----
+  shotLabels: {
+    chase: '3★ WANTED — BANK HEIST — POLICE CHASE — JOB 6: THE BIG ONE',
+    mission: 'PISTOL FIGHT — 3 THUGS — JOB 5: DOCKSIDE TROUBLE',
+    drive: 'TIMED DELIVERY — 100s — JOB 2: HOT DELIVERY',
+    escape: '2★ WANTED — LOSE THE HEAT — JOB 4'
+  },
+
+  // ---- dusk look (static warm golden-hour sunset, no day/night cycle) ----
+  // v6 warm-up (parent decision): golden, sun-soaked, still dusk.
+  sky: 0x4a2438,
+  fog: 0x4a2438,
+  hemiSky: 0xd8b48a, hemiGround: 0x3a2620, hemiIntensity: 1.2,
+  sunColor: 0xffc46b, sunIntensity: 2.1,
+  sunPos: { x: 60, y: 40, z: -80 }
 };
 
-// Tiny deterministic RNG so the city layout is identical every load.
-export function mulberry32(seed) {
-  let a = seed >>> 0;
-  return function () {
-    a |= 0; a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-export function wrapAngle(a) {
-  while (a > Math.PI) a -= Math.PI * 2;
-  while (a < -Math.PI) a += Math.PI * 2;
-  return a;
-}
-
-export function clamp(v, lo, hi) {
-  return v < lo ? lo : v > hi ? hi : v;
-}
-
-export function dist2d(x0, z0, x1, z1) {
-  const dx = x1 - x0, dz = z1 - z0;
-  return Math.sqrt(dx * dx + dz * dz);
-}
+window.NBConfig = NBConfig;
+window.NB_CONFIG = NBConfig;

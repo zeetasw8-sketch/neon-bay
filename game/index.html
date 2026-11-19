@@ -1,90 +1,106 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Neon Bay — open-world crime</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Bay — Open-World Crime</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div id="app"></div>
+<div id="game-container"></div>
 
-<!-- In-game HUD -->
 <div id="hud">
-  <div id="missionBox">
-    <div id="missionTitle">NEON BAY</div>
-    <div id="missionText">Welcome to Neon Bay.</div>
-    <div id="missionTimer"></div>
+  <!-- mission box: Mara's line, the reward and the timer (top-left) -->
+  <div id="mission-box">
+    <div id="mission-title">NEON BAY</div>
+    <div id="mission-text">Take a job from Mara.</div>
+    <div id="mission-reward"></div>
+    <div id="mission-timer"></div>
   </div>
 
-  <div id="objGuide"><span id="objArrow">⬆</span><span id="objDist">168 m</span></div>
-
-  <div id="toast"></div>
-
-  <div id="topRight">
-    <div id="money">$0</div>
-    <div id="stars">☆☆☆☆☆</div>
-    <div id="healthBar"><div id="healthFill"></div></div>
-    <div id="healthText">100</div>
+  <!-- objective arrow: a shafted ⬆ (U+2B06), rotated to the objective -->
+  <div id="objective">
+    <span id="objArrow">⬆</span>
+    <span id="objDist"></span>
   </div>
 
-  <div id="speedo"><span id="speedVal">0</span> mph</div>
+  <!-- toast: shot labels, Mara's lines, payouts (top-centre) -->
+  <div id="toast" style="display:none"></div>
 
-  <div id="minimapWrap">
-    <canvas id="minimap" width="168" height="168"></canvas>
-    <div id="mapLegend">▲ You &nbsp;● Objective &nbsp;■ Bank &nbsp;+ Hospital &nbsp;⌂ Garage<br>Follow the gold beacon. White dots are traffic, red dots are police.</div>
+  <!-- minimap + legend (top-right) -->
+  <div id="minimap-wrap">
+    <canvas id="minimap" width="180" height="180"></canvas>
+    <div id="legend">WHITE you &nbsp;•&nbsp; GOLD objective &nbsp;•&nbsp; RED police &nbsp;•&nbsp; ORANGE thug</div>
   </div>
 
-  <div id="prompt"></div>
-  <div id="controlsHint">WASD move / drive &nbsp;·&nbsp; SHIFT sprint &nbsp;·&nbsp; E enter car &nbsp;·&nbsp; F punch &nbsp;·&nbsp; CLICK shoot &nbsp;·&nbsp; SPACE brake &nbsp;·&nbsp; R retry &nbsp;·&nbsp; ESC pause</div>
-  <div id="crosshair">+</div>
-  <div id="damageFlash"></div>
-
-  <div id="banner"><div id="bannerTitle"></div><div id="bannerText"></div></div>
-</div>
-
-<!-- Main menu -->
-<div id="menu">
-  <div class="menuCard">
-    <h1>NEON BAY</h1>
-    <p class="tagline">An open-world crime story at sunset. Six jobs. One city. No way back.</p>
-    <p class="story">Dex Marlowe is back in Neon Bay, broke and out of options. His fixer Mara Voss has six jobs — a pickup, a hot delivery, a stolen car, a heat problem, a dock fight, and the big one at Meridian Bank. Do them clean, get paid, and maybe the city lets you keep the money.</p>
-    <button id="btnStart">START NEW GAME</button>
-    <button id="btnContinue">CONTINUE</button>
-    <button id="btnHow">HOW TO PLAY</button>
-    <button id="btnSound">SOUND: ON</button>
-    <div id="howBox">
-      <h2>HOW TO PLAY</h2>
-      <p><b>Move / drive:</b> WASD &nbsp;·&nbsp; <b>Sprint:</b> SHIFT &nbsp;·&nbsp; <b>Enter / exit car:</b> E &nbsp;·&nbsp; <b>Punch:</b> F &nbsp;·&nbsp; <b>Shoot (once you have the pistol):</b> CLICK &nbsp;·&nbsp; <b>Handbrake:</b> SPACE &nbsp;·&nbsp; <b>Retry mission:</b> R &nbsp;·&nbsp; <b>Pause:</b> ESC / P &nbsp;·&nbsp; <b>Mute:</b> M &nbsp;·&nbsp; <b>Look:</b> drag mouse &nbsp;·&nbsp; <b>Zoom:</b> wheel</p>
-      <p><b>Wanted:</b> stealing a car, punching or shooting a bystander raises your heat. Police chase you; if one stays close while you are slow for 2 seconds, you are BUSTED. Get over 45 m from every cop car and stay clean — a star fades every 20 seconds.</p>
-      <p><b>Minimap:</b> the gold ▲ is you, the white ● with a gold ring is your objective (it clamps to the edge when far away — follow the gold triangle), the blue ■ is the Bank, the red + is the Hospital, the green ⌂ is your Garage. Follow the gold beacon in the sky to reach your objective.</p>
-      <p><b>Jobs:</b> 1 First Pickup $200 · 2 Hot Delivery $350 (100 s) · 3 Borrowed Wheels $400 · 4 Lose the Heat $500 · 5 Dockside Trouble $600 · 6 The Big One $1,500. Finish all six to become a Neon Bay Legend.</p>
+  <!-- stats (bottom-left): cash, health, wanted stars, speed -->
+  <div id="stats">
+    <div id="cash">$0</div>
+    <div id="health">
+      <span id="health-label">HEALTH 100</span>
+      <div id="health-bar"><div id="health-fill"></div></div>
     </div>
+    <div id="wanted">☆☆☆</div>
+    <div id="speed">0 mph</div>
+  </div>
+
+  <!-- crosshair: shown while on foot with the pistol -->
+  <div id="crosshair" style="display:none">+</div>
+</div>
+
+<!-- start menu -->
+<div id="menu">
+  <div class="panel">
+    <h1>NEON BAY</h1>
+    <p class="tagline">Six jobs. One city. Three stars of heat.</p>
+    <p>Drive and walk a 5×5-block city at sunset. Take jobs from your fixer
+    Mara Voss, steal the case, lose the cops, get home.</p>
+    <p class="controls">WASD move &nbsp;•&nbsp; SHIFT run &nbsp;•&nbsp; E enter / exit car &nbsp;•&nbsp;
+    F punch &nbsp;•&nbsp; CLICK shoot &nbsp;•&nbsp; DRAG look &nbsp;•&nbsp; WHEEL zoom &nbsp;•&nbsp; M mute</p>
+    <button id="btnStart">START</button>
+    <button id="btnContinue" style="display:none">CONTINUE</button>
   </div>
 </div>
 
-<!-- Pause menu -->
-<div id="pauseMenu">
-  <div class="menuCard">
+<!-- pause menu (ESC) -->
+<div id="pause-menu" style="display:none">
+  <div class="panel">
     <h1>PAUSED</h1>
+    <p>Take a breath. Neon Bay waits.</p>
     <button id="btnResume">RESUME</button>
-    <button id="restartBtn">RESTART JOB</button>
-    <button id="btnSoundPause">SOUND: ON/OFF</button>
-    <button id="btnQuit">QUIT TO MENU</button>
   </div>
 </div>
 
-<!-- Wasted / busted screen -->
-<div id="deathScreen">
-  <div class="menuCard">
-    <h1 id="deathTitle">WASTED</h1>
-    <p id="deathText"></p>
-    <button id="btnRespawn">RESPAWN AT HOSPITAL</button>
+<!-- WASTED screen -->
+<div id="death-screen" style="display:none">
+  <div class="panel">
+    <h1 class="wasted">WASTED</h1>
+    <p id="death-fine">You lost $150</p>
+    <button id="death-continue">CONTINUE</button>
+  </div>
+</div>
+
+<!-- BUSTED screen -->
+<div id="busted-screen" style="display:none">
+  <div class="panel">
+    <h1 class="busted">BUSTED</h1>
+    <p id="busted-fine">You lost $150</p>
+    <button id="busted-continue">CONTINUE</button>
   </div>
 </div>
 
 <script src="vendor/three.min.js"></script>
-<script type="module" src="src/main.js"></script>
+<script src="src/config.js"></script>
+<script src="src/input.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/world.js"></script>
+<script src="src/vehicles.js"></script>
+<script src="src/people.js"></script>
+<script src="src/police.js"></script>
+<script src="src/combat.js"></script>
+<script src="src/missions.js"></script>
+<script src="src/hud.js"></script>
+<script src="src/main.js"></script>
 </body>
 </html>

@@ -1,284 +1,249 @@
-// Neon Bay — HUD (v5 rebuild). All DOM: mission box, objective guide,
-// toast, money/stars/health, speed, minimap, legend, prompt, banner, menus.
-// The objective arrow is a pure function of the CURRENT camera direction
-// (from _camPos to the player), never of a smoothed or averaged yaw, and
-// this update runs AFTER the camera moves each tick.
+// Neon Bay — the HUD: objective arrow, minimap, mission box, stats,
+// toasts and the menu / pause / death / busted screens. All DOM. The
+// HUD is updated AFTER the camera moves each frame, so the arrow reads
+// the camera's actual forward direction, never a stale smoothed yaw.
 
-import { NB_CONFIG as C, wrapAngle, dist2d, clamp } from './config.js';
-
-const MAP_R = 84; // minimap circle radius, px
-const MAP_SCALE = MAP_R / C.worldHalf; // 0.3717 px per metre
-const MAP_CLAMP = MAP_R - 10; // objective marker clamps to this radius
-
-export function createHud() {
-  const $ = (id) => document.getElementById(id);
-  const hud = {
-    _els: {},
-    _lastMap: 0,
-    _toastUntil: 0,
-    _bannerUntil: 0,
-    _lastFlash: 0,
-    _cache: {},
-
-    init() {
-      const ids = ['missionBox', 'missionTitle', 'missionText', 'missionTimer',
-        'toast', 'objGuide', 'objArrow', 'objDist', 'money', 'stars',
-        'healthFill', 'healthText', 'speedo', 'speedVal', 'minimap',
-        'mapLegend', 'prompt', 'controlsHint', 'crosshair', 'damageFlash',
-        'banner', 'bannerTitle', 'bannerText', 'menu', 'pauseMenu',
-        'deathScreen', 'deathTitle', 'deathText', 'howBox', 'btnContinue'];
-      for (const id of ids) this._els[id] = $(id);
-      // The objective guide is a block element (the fix probe reads display).
-      if (this._els.objGuide) this._els.objGuide.style.display = 'block';
-    },
-
-    _setText(el, v) {
-      if (!el) return;
-      if (this._cache[el.id] !== v) { this._cache[el.id] = v; el.textContent = v; }
-    },
-
-    setMission(title, text, timer) {
-      this._setText(this._els.missionTitle, title);
-      this._setText(this._els.missionText, text);
-      this.setMissionTimer(timer);
-    },
-
-    setMissionTimer(t) {
-      const v = t > 0 ? `${Math.ceil(t)}s` : '';
-      this._setText(this._els.missionTimer, v);
-    },
-
-    setMoney(cash) {
-      this._setText(this._els.money, `$${cash}`);
-    },
-
-    setWanted(n) {
-      let s = '';
-      for (let i = 0; i < C.maxWanted; i++) s += i < n ? '★' : '☆';
-      this._setText(this._els.stars, s);
-    },
-
-    setHealth(hp, max) {
-      const pct = clamp(hp / max, 0, 1) * 100;
-      if (this._els.healthFill) this._els.healthFill.style.width = `${pct}%`;
-      this._setText(this._els.healthText, `${Math.ceil(hp)}`);
-    },
-
-    toast(text, seconds) {
-      const el = this._els.toast;
-      if (!el) return;
-      el.textContent = text;
-      el.style.display = 'block';
-      this._toastUntil = performance.now() + (seconds || 3) * 1000;
-    },
-
-    showBanner(title, text) {
-      const el = this._els.banner;
-      if (!el) return;
-      this._setText(this._els.bannerTitle, title);
-      this._setText(this._els.bannerText, text || '');
-      el.style.display = 'block';
-      this._bannerUntil = performance.now() + 3500;
-    },
-
-    flashDamage() {
-      const now = performance.now();
-      if (now - this._lastFlash < 333) return; // at most 3 flashes a second
-      this._lastFlash = now;
-      const el = this._els.damageFlash;
-      if (!el) return;
-      el.style.opacity = '0.45';
-      setTimeout(() => { el.style.opacity = '0'; }, 120);
-    },
-
-    showMenu(show, hasSave) {
-      if (this._els.menu) this._els.menu.style.display = show ? 'flex' : 'none';
-      if (this._els.btnContinue) this._els.btnContinue.style.display = hasSave ? 'block' : 'none';
-    },
-
-    showPause(show) {
-      if (this._els.pauseMenu) this._els.pauseMenu.style.display = show ? 'flex' : 'none';
-    },
-
-    showDeath(show, title, text) {
-      if (!this._els.deathScreen) return;
-      if (show) {
-        this._setText(this._els.deathTitle, title);
-        this._setText(this._els.deathText, text);
-      }
-      this._els.deathScreen.style.display = show ? 'flex' : 'none';
-    },
-
-    // The objective arrow: bearing to the objective minus the camera's
-    // ACTUAL view bearing (from _camPos to the player), wrapped to +-180.
-    // No history, no smoothing — a pure function of this frame's camera.
-    update(game, dt) {
-      const now = performance.now();
-      if (this._els.toast && now > this._toastUntil) this._els.toast.style.display = 'none';
-      if (this._els.banner && now > this._bannerUntil) this._els.banner.style.display = 'none';
-
-      // --- objective guide ---
-      const obj = game.world.objectivePos();
-      const guide = this._els.objGuide;
-      if (guide && game.state === 'playing' && game.missions.active) {
-        const px = game.playerPos.x, pz = game.playerPos.z;
-        const bearing = Math.atan2(obj.x - px, obj.z - pz);
-        const cdx = px - game._camPos.x, cdz = pz - game._camPos.z;
-        const viewBearing = (cdx * cdx + cdz * cdz) > 0.25
-          ? Math.atan2(cdx, cdz)
-          : game._camYawSmooth;
-        const rel = wrapAngle(bearing - viewBearing);
-        const rot = -rel * 180 / Math.PI;
-        if (this._els.objArrow) this._els.objArrow.style.transform = `rotate(${rot.toFixed(1)}deg)`;
-        const d = Math.round(dist2d(px, pz, obj.x, obj.z));
-        this._setText(this._els.objDist, `${d} m`);
-        guide.style.display = 'block';
-      } else if (guide) {
-        guide.style.display = 'none';
-      }
-
-      // --- speed ---
-      if (this._els.speedo) {
-        if (game.inCar && game.vehicles.playerCar) {
-          const mph = Math.round(Math.abs(game.vehicles.playerCar.speed) * 2.237);
-          this._setText(this._els.speedVal, `${mph}`);
-          this._els.speedo.style.display = 'block';
-        } else {
-          this._els.speedo.style.display = 'none';
-        }
-      }
-
-      // --- crosshair: only when armed and on foot ---
-      if (this._els.crosshair) {
-        this._els.crosshair.style.display = (game.hasGun && !game.inCar && game.state === 'playing') ? 'block' : 'none';
-      }
-
-      // --- car prompt ---
-      if (this._els.prompt) {
-        if (game.state === 'playing' && !game.inCar) {
-          const car = game.vehicles.nearestCar(px0(game), pz0(game), C.enterRadius);
-          if (car) {
-            const d = Math.round(dist2d(game.playerPos.x, game.playerPos.z, car.mesh.position.x, car.mesh.position.z));
-            this._setText(this._els.prompt, `Press E to steal car — ${d}m`);
-            this._els.prompt.style.display = 'block';
-          } else {
-            this._els.prompt.style.display = 'none';
-          }
-        } else {
-          this._els.prompt.style.display = 'none';
-        }
-      }
-
-      // --- minimap, redrawn at most every 150 ms ---
-      if (now - this._lastMap > 150) {
-        this._lastMap = now;
-        this._drawMinimap(game);
-      }
-    },
-
-    _drawMinimap(game) {
-      const cv = this._els.minimap;
-      if (!cv) return;
-      const ctx = cv.getContext('2d');
-      const W = cv.width, H = cv.height, cx = W / 2, cy = H / 2;
-      const toMap = (x, z) => [cx + x * MAP_SCALE, cy + z * MAP_SCALE];
-      ctx.clearRect(0, 0, W, H);
-      // Sea + beach along the south edge.
-      ctx.fillStyle = '#0d3b5c';
-      ctx.fillRect(0, cy + 175 * MAP_SCALE, W, H);
-      ctx.fillStyle = '#8a6f4d';
-      ctx.fillRect(0, cy + 168 * MAP_SCALE, W, cy + 175 * MAP_SCALE - (cy + 168 * MAP_SCALE));
-      // City disc.
-      ctx.beginPath();
-      ctx.arc(cx, cy, MAP_R, 0, Math.PI * 2);
-      ctx.fillStyle = '#12141a';
-      ctx.fill();
-      ctx.save();
-      ctx.clip();
-      // Roads.
-      ctx.strokeStyle = '#3a3d47';
-      ctx.lineWidth = 14 * MAP_SCALE;
-      for (const L of C.roadLines) {
-        const [x0] = toMap(L, 0);
-        ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.stroke();
-        const [, z0] = toMap(0, L);
-        ctx.beginPath(); ctx.moveTo(0, z0); ctx.lineTo(W, z0); ctx.stroke();
-      }
-      // Blocks.
-      ctx.fillStyle = '#1e212a';
-      for (const bx of [-140, -70, 0, 70, 140]) {
-        for (const bz of [-140, -70, 0, 70, 140]) {
-          const [x, z] = toMap(bx - 28, bz - 28);
-          ctx.fillRect(x, z, 56 * MAP_SCALE, 56 * MAP_SCALE);
-        }
-      }
-      // Garage (green), bank (blue), hospital (red cross).
-      const [gx, gz] = toMap(C.garage.x, C.garage.z);
-      ctx.fillStyle = '#2e7d4f';
-      ctx.fillRect(gx - 4, gz - 4, 8, 8);
-      const [bx2, bz2] = toMap(C.bank.x, C.bank.z);
-      ctx.fillStyle = '#2a6aff';
-      ctx.fillRect(bx2 - 4, bz2 - 4, 8, 8);
-      const [hx, hz] = toMap(C.hospital.x, C.hospital.z);
-      ctx.fillStyle = '#ff2a2a';
-      ctx.fillRect(hx - 1.5, hz - 5, 3, 10);
-      ctx.fillRect(hx - 5, hz - 1.5, 10, 3);
-      // Traffic dots.
-      ctx.fillStyle = '#c8c8c8';
-      for (const c of game.vehicles.cars) {
-        const [x, z] = toMap(c.mesh.position.x, c.mesh.position.z);
-        ctx.fillRect(x - 1, z - 1, 2, 2);
-      }
-      // Police dots.
-      ctx.fillStyle = '#ff5252';
-      for (const c of game.police.cars) {
-        const [x, z] = toMap(c.mesh.position.x, c.mesh.position.z);
-        ctx.beginPath(); ctx.arc(x, z, 2.5, 0, Math.PI * 2); ctx.fill();
-      }
-      // Objective: big white circle + gold ring, CLAMPED to the edge so a
-      // far objective is never clipped away (the round-2 root cause).
-      const obj = game.world.objectivePos();
-      if (game.missions.active) {
-        const ox = obj.x * MAP_SCALE, oz = obj.z * MAP_SCALE;
-        const d = Math.hypot(ox, oz);
-        const cd = d > MAP_CLAMP ? MAP_CLAMP : d;
-        const ux = d > 0 ? ox / d : 0, uz = d > 0 ? oz / d : 0;
-        const mx = cx + ux * cd, my = cy + uz * cd;
-        const pulse = 6 + Math.sin(performance.now() / 300) * 1.5;
-        ctx.beginPath(); ctx.arc(mx, my, pulse + 2.5, 0, Math.PI * 2);
-        ctx.strokeStyle = '#ffb300'; ctx.lineWidth = 2; ctx.stroke();
-        ctx.beginPath(); ctx.arc(mx, my, pulse, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffffff'; ctx.fill();
-        if (d > MAP_CLAMP) {
-          // Small gold triangle pointing outward, past the edge.
-          ctx.fillStyle = '#ffb300';
-          ctx.beginPath();
-          ctx.moveTo(cx + ux * (MAP_R - 2), cy + uz * (MAP_R - 2));
-          ctx.lineTo(cx + ux * (MAP_R - 9) - uz * 4, cy + uz * (MAP_R - 9) + ux * 4);
-          ctx.lineTo(cx + ux * (MAP_R - 9) + uz * 4, cy + uz * (MAP_R - 9) - ux * 4);
-          ctx.closePath(); ctx.fill();
-        }
-      }
-      // Player arrow (gold), pointing along the heading.
-      const [px2, pz2] = toMap(game.playerPos.x, game.playerPos.z);
-      const h = game.player.heading;
-      ctx.fillStyle = '#ffe14d';
-      ctx.beginPath();
-      ctx.moveTo(px2 + Math.sin(h) * 6, pz2 + Math.cos(h) * 6);
-      ctx.lineTo(px2 + Math.sin(h + 2.5) * 5, pz2 + Math.cos(h + 2.5) * 5);
-      ctx.lineTo(px2 + Math.sin(h - 2.5) * 5, pz2 + Math.cos(h - 2.5) * 5);
-      ctx.closePath(); ctx.fill();
-      ctx.restore();
-      // Rim + north.
-      ctx.beginPath(); ctx.arc(cx, cy, MAP_R, 0, Math.PI * 2);
-      ctx.strokeStyle = '#555a66'; ctx.lineWidth = 2; ctx.stroke();
-      ctx.fillStyle = '#e8e8e8';
-      ctx.font = 'bold 11px sans-serif';
-      ctx.fillText('N', cx - 4, cy - MAP_R + 12);
-    },
-  };
-  return hud;
+// updateObjectiveArrow points the ⬆ glyph at the objective. Bearing is
+// atan2(dx, dz) in degrees; rel is the objective bearing minus the view
+// bearing, normalised to [-180, +180]; the CSS rotation is -rel. The
+// glyph is U+2B06 (a shafted arrow) — a bare ▲ reads as ◀/▶ at 43°.
+// The view direction is the actual camera forward (player minus camera
+// position), a pure function of the current frame: no smoothing state.
+function updateObjectiveArrow(game) {
+  var el = document.getElementById('objArrow');
+  var distEl = document.getElementById('objDist');
+  if (!el) return;
+  var target = NBMissions.missionTarget(game);
+  if (!target) { el.style.display = 'none'; if (distEl) distEl.style.display = 'none'; return; }
+  el.style.display = 'inline-block';
+  if (distEl) distEl.style.display = 'inline-block';
+  var cam = game.camera;
+  var cdx = game.player.x - cam.position.x;
+  var cdz = game.player.z - cam.position.z;
+  var viewBearing = Math.atan2(cdx, cdz) * 180 / Math.PI;
+  var odx = target.x - game.player.x;
+  var odz = target.z - game.player.z;
+  var objBearing = Math.atan2(odx, odz) * 180 / Math.PI;
+  var rel = objBearing - viewBearing;
+  while (rel > 180) rel -= 360;
+  while (rel < -180) rel += 360;
+  el.style.transform = 'rotate(' + (-rel) + 'deg)';
+  if (distEl) {
+    var d = Math.sqrt(odx * odx + odz * odz);
+    distEl.textContent = Math.round(d) + ' m';
+  }
 }
 
-function px0(game) { return game.playerPos.x; }
-function pz0(game) { return game.playerPos.z; }
+// updateMissionBox writes the title, Mara's line / objective, reward and
+// timer into the mission box. It only touches the DOM when a value
+// changed, so the box does not flicker.
+function updateMissionBox(game) {
+  var box = document.getElementById('mission-box');
+  if (!box) return;
+  var m = game.mission;
+  if (!m) {
+    var done = game.jobsDone >= NBConfig.missions.length;
+    setText('mission-title', done ? 'FREE ROAM' : 'NEON BAY');
+    setText('mission-text', done ? 'All jobs done. The city is yours.' : 'Take a job from Mara.');
+    setText('mission-reward', '');
+    setText('mission-timer', '');
+    return;
+  }
+  setText('mission-title', 'JOB ' + (m.index + 1) + ' — ' + m.def.title);
+  setText('mission-text', m.text);
+  setText('mission-reward', 'Reward $' + m.def.reward);
+  setText('mission-timer', m.timer > 0 ? Math.ceil(m.timer) + 's' : '');
+}
+
+// setText writes text into an element only when it changed.
+function setText(id, text) {
+  var el = document.getElementById(id);
+  if (el && el.textContent !== text) el.textContent = text;
+}
+
+// setHealth writes the health label and bar (health / maxHealth).
+// Used by the game loop and by anything that resets health directly.
+function setHealth(health, maxHealth) {
+  var hp = Math.max(0, Math.round(health));
+  setText('health-label', 'HEALTH ' + hp);
+  var bar = document.getElementById('health-fill');
+  if (bar) bar.style.width = (maxHealth > 0 ? (hp / maxHealth) * 100 : 0) + '%';
+}
+
+// updateStats writes cash, health, wanted stars and speed (mph). Only
+// changed values touch the DOM.
+function updateStats(game) {
+  setText('cash', '$' + game.cash);
+  setHealth(game.health, NBConfig.maxHealth);
+  var stars = '';
+  for (var i = 0; i < 3; i++) stars += i < game.wanted ? '★' : '☆';
+  setText('wanted', stars);
+  var speed = game.playerCar ? Math.abs(game.playerCar.speed) : (game.player.moving ? (game.player.sprinting ? NBConfig.runSpeed : NBConfig.walkSpeed) : 0);
+  setText('speed', Math.round(speed * 2.237) + ' mph');
+}
+
+// drawMinimap redraws the whole-city minimap: roads, sea, the player
+// (white arrow), the objective (gold ring), police (red dots), thugs
+// (orange dots) and traffic (grey dots). Throttled to ~150 ms by the
+// caller so it never costs a frame.
+function drawMinimap(game) {
+  var cv = document.getElementById('minimap');
+  if (!cv) return;
+  var g = cv.getContext('2d');
+  var S = cv.width, k = S / 400;
+  function X(x) { return (x + 200) * k; }
+  function Z(z) { return (z + 200) * k; }
+  g.fillStyle = '#241f33'; g.fillRect(0, 0, S, S);
+  g.fillStyle = '#0d1b2e'; g.fillRect(0, Z(206), S, S - Z(206)); // sea
+  g.strokeStyle = '#17141f'; g.lineWidth = 14 * k;
+  NBConfig.roadAt.forEach(function (c) {
+    g.beginPath(); g.moveTo(X(c), 0); g.lineTo(X(c), S); g.stroke();
+    g.beginPath(); g.moveTo(0, Z(c)); g.lineTo(S, Z(c)); g.stroke();
+  });
+  // traffic (grey)
+  g.fillStyle = '#999999';
+  game.cars.forEach(function (c) {
+    if (c.isTraffic) { g.beginPath(); g.arc(X(c.x), Z(c.z), 1.6, 0, 7); g.fill(); }
+  });
+  // thugs (orange)
+  g.fillStyle = '#ff7a1a';
+  game.thugs.forEach(function (t) {
+    if (!t.down) { g.beginPath(); g.arc(X(t.x), Z(t.z), 2.2, 0, 7); g.fill(); }
+  });
+  // police (red)
+  g.fillStyle = '#ff2a22';
+  game.cops.forEach(function (c) {
+    g.beginPath(); g.arc(X(c.x), Z(c.z), 2.6, 0, 7); g.fill();
+  });
+  // objective (gold ring)
+  var target = NBMissions.missionTarget(game);
+  if (target) {
+    g.strokeStyle = '#ffd700'; g.lineWidth = 2;
+    g.beginPath(); g.arc(X(target.x), Z(target.z), 5, 0, 7); g.stroke();
+    g.fillStyle = '#ffd700';
+    g.beginPath(); g.arc(X(target.x), Z(target.z), 2, 0, 7); g.fill();
+  }
+  // player (white arrow, rotated to facing)
+  var px = X(game.player.x), pz = Z(game.player.z);
+  g.save();
+  g.translate(px, pz);
+  g.rotate(Math.atan2(Math.sin(game.player.angle), -Math.cos(game.player.angle)) + Math.PI);
+  g.fillStyle = '#ffffff';
+  g.beginPath();
+  g.moveTo(0, -5); g.lineTo(3.5, 4); g.lineTo(-3.5, 4); g.closePath();
+  g.fill();
+  g.restore();
+}
+
+// showToast displays a centred toast (the shot label, Mara's line, or a
+// payout) for `seconds`. Called LAST before a screenshot capture.
+function showToast(game, text, seconds) {
+  var el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = text;
+  el.style.display = 'block';
+  game.toastTimer = seconds || 3;
+}
+
+// updateToast counts the toast down and hides it when it expires.
+function updateToast(game, dt) {
+  if (game.toastTimer > 0) {
+    game.toastTimer -= dt;
+    if (game.toastTimer <= 0) {
+      var el = document.getElementById('toast');
+      if (el) el.style.display = 'none';
+    }
+  }
+}
+
+// updateCrosshair shows the + crosshair while the player is on foot
+// with the pistol.
+function updateCrosshair(game) {
+  var el = document.getElementById('crosshair');
+  if (!el) return;
+  el.style.display = (game.hasGun && !game.playerCar && game.health > 0) ? 'block' : 'none';
+}
+
+// showMenu displays the start menu overlay.
+function showMenu() {
+  var el = document.getElementById('menu');
+  if (el) el.style.display = 'flex';
+}
+
+// hideMenu hides the start menu overlay.
+function hideMenu() {
+  var el = document.getElementById('menu');
+  if (el) el.style.display = 'none';
+}
+
+// showPause displays the pause overlay (ESC).
+function showPause() {
+  var el = document.getElementById('pause-menu');
+  if (el) el.style.display = 'flex';
+}
+
+// hidePause hides the pause overlay.
+function hidePause() {
+  var el = document.getElementById('pause-menu');
+  if (el) el.style.display = 'none';
+}
+
+// showDeath shows the WASTED screen with the $150 fine.
+function showDeath(game) {
+  var el = document.getElementById('death-screen');
+  if (!el) return;
+  setText('death-fine', 'You lost $' + NBConfig.fine);
+  el.style.display = 'flex';
+  game.state = 'dead';
+}
+
+// showBusted shows the BUSTED screen with the $150 fine.
+function showBusted(game) {
+  var el = document.getElementById('busted-screen');
+  if (!el) return;
+  setText('busted-fine', 'You lost $' + NBConfig.fine);
+  el.style.display = 'flex';
+  game.state = 'busted';
+}
+
+// hideEndScreens hides both end screens (used on Continue).
+function hideEndScreens() {
+  ['death-screen', 'busted-screen'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.style.display = 'none';
+  });
+}
+
+// updateHud is the per-frame HUD entry: arrow, mission box, stats,
+// crosshair, toast and the throttled minimap. Called AFTER the camera.
+function updateHud(game, dt) {
+  updateObjectiveArrow(game);
+  updateMissionBox(game);
+  updateStats(game);
+  updateCrosshair(game);
+  updateToast(game, dt);
+  game.minimapTimer -= dt;
+  if (game.minimapTimer <= 0) {
+    game.minimapTimer = 0.15;
+    drawMinimap(game);
+  }
+}
+
+window.NBHud = {
+  updateObjectiveArrow: updateObjectiveArrow,
+  updateMissionBox: updateMissionBox,
+  updateStats: updateStats,
+  setHealth: setHealth,
+  drawMinimap: drawMinimap,
+  showToast: showToast,
+  updateToast: updateToast,
+  updateCrosshair: updateCrosshair,
+  showMenu: showMenu,
+  hideMenu: hideMenu,
+  showPause: showPause,
+  hidePause: hidePause,
+  showDeath: showDeath,
+  showBusted: showBusted,
+  hideEndScreens: hideEndScreens,
+  updateHud: updateHud
+};

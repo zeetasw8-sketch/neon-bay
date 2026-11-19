@@ -1,176 +1,282 @@
-// Neon Bay — missions (v5 rebuild). Six chained jobs from Mara, then free
-// roam. A job is a list of stages; a stage is a place to reach, a car to
-// steal, heat to lose, or thugs to drop. Completing a job pays out, shows a
-// banner, and auto-starts the next one after a short beat. The bank pickup
-// sits OUTSIDE the bank (the v2 P0), and JOB 6 only counts when the player
-// is home AND clean.
+// Neon Bay — the six jobs. Mara Voss hands Dex one job at a time; each
+// pays on completion and the next starts straight away. Every job is a
+// small state machine: a stage, an objective point (the gold beacon), an
+// optional timer, and a completion rule. The HUD reads game.mission, so
+// Mara's line and the dollar reward are always visible on screen.
+// The module also exposes its live state (index, active, timer, phase)
+// for the HUD and the test harness.
 
-import { NB_CONFIG as C, dist2d } from './config.js';
-
-const AUTO_NEXT_BEAT = 2.8; // seconds between "JOB COMPLETE" and the next intro
-
-export function createMissions() {
-  const missions = {
-    index: 0,
-    stage: 0,
-    phase: null,
-    active: null,
-    timer: 0,
-    pendingNext: null,
-    _beatT: 0,
-    _failed: false,
-
-    def() {
-      return C.missions[this.index] || null;
-    },
-
-    // Hard reset. init(0) resets to JOB 1; init() resets to the current index.
-    init(n) {
-      if (typeof n === 'number') this.index = n;
-      this.stage = 0;
-      this.active = null;
-      this.timer = 0;
-      this.pendingNext = null;
-      this._beatT = 0;
-      this._failed = false;
-      const d = this.def();
-      this.phase = d ? d.stages[0].phase : null;
-    },
-
-    start(game) {
-      const d = this.def();
-      if (!d) { this.active = null; this.phase = null; return; }
-      this.active = d;
-      this.stage = 0;
-      this.phase = d.stages[0].phase;
-      this.timer = d.timer || 0;
-      this._failed = false;
-      this.pendingNext = null;
-      if (d.forceWanted) game.setWanted(d.forceWanted);
-      if (d.giveGun) game.giveGun();
-      if (d.thugs) game.people.spawnThugs(game);
-      game.world.setObjective(d.stages[0].x ?? C.garage.x, d.stages[0].z ?? C.garage.z);
-      game.hud.setMission(d.title, d.stages[0].text, this.timer);
-      game.hud.toast(d.intro, 6);
-      game.faceObjective();
-    },
-
-    restart(game) {
-      // True restart: player back to the garage, stage 1, timer full, heat
-      // cleared, intro replayed, camera re-facing the objective.
-      game.exitCar(true);
-      game.playerPos.set(C.garageSpawn.x, 0, C.garageSpawn.z);
-      game.player.heading = 0;
-      game.health = C.maxHealth;
-      game.hud.setHealth(game.health, C.maxHealth);
-      game.setWanted(0);
-      game.people.clearThugs();
-      this.start(game);
-      game.hud.showBanner('JOB RESTARTED', this.active ? this.active.title : '');
-      game.state = 'playing';
-      game.hud.showPause(false);
-    },
-
-    completeStage(game) {
-      const d = this.def();
-      if (!d) return;
-      const st = d.stages[this.stage];
-      // JOB 6: grabbing the case trips the alarm and the heat.
-      if (d.forceWantedAfterPickup && st.phase === 'toBank') {
-        game.setWanted(d.forceWantedAfterPickup);
-        game.hud.toast('ALARM! Bay PD is coming — RUN!', 5);
-        game.audio.setSiren(true);
-      }
-      this.stage++;
-      if (this.stage >= d.stages.length) {
-        this._completeJob(game, d);
-        return;
-      }
-      const nx = d.stages[this.stage];
-      this.phase = nx.phase;
-      if (nx.x !== undefined) game.world.setObjective(nx.x, nx.z);
-      game.hud.setMission(d.title, nx.text, this.timer);
-      if (nx.phase === 'toHome' && this.stage === 1 && d.stages[0].phase === 'toPier') {
-        game.hud.toast('Package secured. Back to the garage.', 4);
-      }
-    },
-
-    _completeJob(game, d) {
-      game.cash += d.reward;
-      game.audio.cash();
-      game.audio.missionDone();
-      game.save();
-      game.hud.showBanner('JOB COMPLETE', `${d.title} — $${d.reward}`);
-      game.hud.setMission(d.title, 'Job done. Next job incoming…', 0);
-      this.active = null;
-      this.phase = null;
-      if (this.index >= C.missions.length - 1) {
-        // All six done: legend status, then free roam.
-        game.hud.showBanner('NEON BAY LEGEND', 'All six jobs done. The city is yours.');
-        this.index = C.missions.length;
-        this.pendingNext = null;
-        game.world.setObjective(C.garage.x, C.garage.z);
-        game.hud.setMission('FREE ROAM', 'Neon Bay is yours. Drive, explore, stay out of trouble.', 0);
-        game.save();
-        return;
-      }
-      this.pendingNext = this.index + 1;
-      this._beatT = AUTO_NEXT_BEAT;
-    },
-
-    fail(game) {
-      if (this._failed) return;
-      this._failed = true;
-      this.timer = 0;
-      game.hud.showBanner('MISSION FAILED', 'Time ran out — press R to retry.');
-      game.hud.setMission(this.active ? this.active.title : '', 'Mission failed. Press R to retry.', 0);
-    },
-
-    update(game, dt) {
-      // Auto-advance beat after a completed job.
-      if (this.pendingNext !== null && !this.active) {
-        this._beatT -= dt;
-        if (this._beatT <= 0) {
-          this.index = this.pendingNext;
-          this.pendingNext = null;
-          this.start(game);
-        }
-        return;
-      }
-      if (!this.active) return;
-      const d = this.def();
-      if (!d) return;
-      if (this.timer > 0 && !this._failed) {
-        this.timer -= dt;
-        if (this.timer <= 0) { this.timer = 0; this.fail(game); return; }
-        game.hud.setMissionTimer(this.timer);
-      }
-      if (this._failed) return;
-      const st = d.stages[this.stage];
-      if (!st) return;
-      const px = game.playerPos.x, pz = game.playerPos.z;
-      if (st.phase === 'steal') {
-        // Already in a car when JOB 3 starts? It counts at once.
-        if (game.inCar) this.completeStage(game);
-        return;
-      }
-      if (st.phase === 'loseheat') {
-        if (game.wanted <= 0) this.completeStage(game);
-        return;
-      }
-      if (st.phase === 'fight') {
-        if (game.people.thugs.length === 0) this.completeStage(game);
-        return;
-      }
-      if (st.x !== undefined) {
-        const dd = dist2d(px, pz, st.x, st.z);
-        if (dd <= st.r) {
-          if (st.needCar && !game.inCar) return;
-          if (st.needClean && game.wanted > 0) return;
-          this.completeStage(game);
-        }
-      }
-    },
+// startMission begins job `index` (0-based): sets the stage, the timer,
+// the forced wanted level, the pistol, the thugs, the beacon and Mara's
+// intro line. A car already occupied at the start of job 3 counts.
+function startMission(index, game) {
+  var def = missionById(index);
+  if (!def) { game.mission = null; setLive(null); return; }
+  game.missionIndex = index;
+  var stage = def.pickup ? 'pickup' : (index === 2 ? 'steal' : (index === 3 ? 'escape' : (index === 4 ? 'fight' : 'pickup')));
+  game.mission = {
+    index: index, def: def, title: def.title,
+    stage: stage,
+    timer: def.timer || 0,
+    text: def.start
   };
-  return missions;
+  if (def.forceWanted) NBPolice.setWanted(game, def.forceWanted);
+  if (index === 4) {
+    game.hasGun = true;
+    NBPeople.clearThugs(game.scene);
+    def.thugs.forEach(function (p) {
+      NBPeople.spawnThug(game.scene, p.x, p.z);
+    });
+    game.thugs = NBPeople.thugs;
+  }
+  if (index === 2 && game.playerCar) game.mission.stage = 'drop';
+  game.showToast(def.intro, 6);
+  moveMissionBeacon(game);
+  setLive(game.mission);
 }
+
+// setLive mirrors the mission into the module's live properties.
+function setLive(mission) {
+  if (!mission) {
+    liveIndex = -1; liveActive = null; liveTimer = 0; livePhase = null;
+    return;
+  }
+  liveIndex = mission.index;
+  liveActive = mission;
+  liveTimer = mission.timer;
+  livePhase = phaseOf(mission.stage);
+}
+
+// phaseOf maps a mission stage to the phase name the HUD and the
+// harness read: toPickup (going to the pickup), toHome (going back),
+// or the stage name itself (steal / escape / fight).
+function phaseOf(stage) {
+  if (stage === 'pickup') return 'toPickup';
+  if (stage === 'drop') return 'toHome';
+  return stage;
+}
+
+// init resets the mission chain to the beginning (no active job).
+function init() {
+  liveIndex = 0; liveActive = null; liveTimer = 0; livePhase = null;
+}
+
+// start begins the job at the module's current index.
+function start(game) {
+  startMission(liveIndex, game);
+}
+
+// moveMissionBeacon points the gold beam at the current objective:
+// the pickup, the drop, the docks, or the nearest car (job 3). During
+// job 4's escape there is no place to go, so the beam hides.
+function moveMissionBeacon(game) {
+  var m = game.mission;
+  if (!m) { setBeaconVisible(game, false); return; }
+  var def = m.def;
+  if (m.stage === 'pickup' && def.pickup) {
+    NBWorld.moveBeacon(game.world, def.pickup.x, def.pickup.z);
+    setBeaconVisible(game, true);
+  } else if (m.stage === 'drop' && def.drop) {
+    NBWorld.moveBeacon(game.world, def.drop.x, def.drop.z);
+    setBeaconVisible(game, true);
+  } else if (m.stage === 'fight' && def.target) {
+    NBWorld.moveBeacon(game.world, def.target.x, def.target.z);
+    setBeaconVisible(game, true);
+  } else if (m.stage === 'steal') {
+    var car = NBVehicles.nearestCar(game.cars, game.player.x, game.player.z, 500);
+    if (car) {
+      NBWorld.moveBeacon(game.world, car.x, car.z);
+      setBeaconVisible(game, true);
+    } else setBeaconVisible(game, false);
+  } else {
+    setBeaconVisible(game, false);
+  }
+}
+
+// setBeaconVisible shows or hides the gold beam and its base disc.
+function setBeaconVisible(game, show) {
+  game.world.beacon.visible = show;
+  game.world.beaconBase.visible = show;
+  game.beaconVisible = show;
+}
+
+// missionTarget returns the current objective point { x, z } for the
+// HUD arrow and minimap (null when there is none). During job 4's
+// escape the beam hides (no place to go yet), but the arrow still
+// points home — the garage is where the job ends after the heat dies.
+function missionTarget(game) {
+  var m = game.mission;
+  if (!m) return null;
+  if (m.stage === 'escape' && m.def.drop) return { x: m.def.drop.x, z: m.def.drop.z };
+  if (!game.beaconVisible) return null;
+  return { x: game.world.beacon.position.x, z: game.world.beacon.position.z };
+}
+
+// updateMissions advances the current job: the timer, the stage checks
+// (pickup / steal / escape / fight / drop) and the retry countdown after
+// a failure. Returns 'complete', 'failed' or 'ok'.
+function updateMissions(game, dt) {
+  if (game.retryIn > 0) {
+    game.retryIn -= dt;
+    if (game.retryIn <= 0 && !game.mission) startMission(game.missionIndex, game);
+    return 'ok';
+  }
+  var m = game.mission;
+  if (!m) return 'ok';
+  if (m.timer > 0) {
+    m.timer -= dt;
+    liveTimer = m.timer;
+    if (m.timer <= 0) {
+      failMission(game, 'TIME UP');
+      return 'failed';
+    }
+  }
+  var p = game.player;
+  if (m.stage === 'pickup' && m.def.pickup) {
+    if (nearPoint(p, m.def.pickup)) {
+      onPickup(game);
+      return 'ok';
+    }
+  }
+  if (m.stage === 'steal') {
+    if (game.playerCar) {
+      m.stage = 'drop';
+      m.text = m.def.complete;
+      livePhase = 'toHome';
+      moveMissionBeacon(game);
+    }
+    return 'ok';
+  }
+  if (m.stage === 'escape') {
+    if (game.wanted === 0) {
+      m.stage = 'drop';
+      m.text = m.def.complete;
+      livePhase = 'toHome';
+      moveMissionBeacon(game);
+    }
+    return 'ok';
+  }
+  if (m.stage === 'fight') {
+    if (game.thugs.length === 0) {
+      m.stage = 'drop';
+      m.text = m.def.complete;
+      livePhase = 'toHome';
+      moveMissionBeacon(game);
+    }
+    return 'ok';
+  }
+  if (m.stage === 'drop' && m.def.drop) {
+    if (nearPoint(p, m.def.drop)) {
+      if (m.index === 5 && game.wanted > 0) return 'ok'; // job 6: home CLEAN
+      completeMission(game);
+      return 'complete';
+    }
+  }
+  return 'ok';
+}
+
+// onPickup handles collecting a package or the bank case: advances the
+// stage, and for job 6 trips the alarm (3 stars) as the case is grabbed.
+function onPickup(game) {
+  var m = game.mission;
+  m.stage = 'drop';
+  m.text = m.def.complete;
+  livePhase = 'toHome';
+  if (m.index === 5) {
+    NBPolice.setWanted(game, 3);
+    game.showToast('ALARM! 3★ WANTED — get home CLEAN', 4);
+  }
+  moveMissionBeacon(game);
+}
+
+// nearPoint reports whether the player is inside a pickup/drop radius.
+// The radius is generous (job 6's bank pickup is 8 m, in front of the
+// entrance, so it works on foot and in a car).
+function nearPoint(player, point) {
+  var dx = player.x - point.x, dz = player.z - point.z;
+  return dx * dx + dz * dz < point.r * point.r;
+}
+
+// completeMission pays the job, plays the payout sounds, saves, and
+// starts the next job (or free roam after the last one).
+function completeMission(game) {
+  var m = game.mission;
+  var reward = m.def.reward;
+  game.cash += reward;
+  game.jobsDone++;
+  NBAudio.playCash();
+  NBAudio.playMission();
+  game.showToast('JOB COMPLETE  +$' + reward, 3);
+  game.mission = null;
+  setBeaconVisible(game, false);
+  var next = m.index + 1;
+  game.missionIndex = next; // the save records the NEXT job, not the one done
+  game.saveGame();
+  if (next < NBConfig.missions.length) startMission(next, game);
+  else {
+    setLive(null);
+    game.showToast('ALL JOBS DONE — Neon Bay is yours. Free roam!', 6);
+  }
+}
+
+// failMission ends a job on a blown timer: the heat clears, the job
+// restarts after 3 seconds so the player can try again.
+function failMission(game, reason) {
+  var idx = game.missionIndex;
+  game.mission = null;
+  setBeaconVisible(game, false);
+  NBPolice.setWanted(game, 0);
+  game.showToast('MISSION FAILED — ' + reason + '. Try again.', 3);
+  game.retryIn = 3;
+  game.missionIndex = idx;
+  setLive(null);
+}
+
+// abortMission drops the current job (used when the player is WASTED or
+// BUSTED mid-job): the same job restarts from the beginning. After the
+// last job there is nothing to restart — it is free roam.
+function abortMission(game) {
+  var idx = game.missionIndex;
+  game.mission = null;
+  setBeaconVisible(game, false);
+  if (idx >= NBConfig.missions.length) { game.retryIn = 0; setLive(null); return; }
+  game.retryIn = 2;
+  game.missionIndex = idx;
+  setLive(null);
+}
+
+var liveIndex = 0, liveActive = null, liveTimer = 0, livePhase = null;
+
+window.NBMissions = {
+  startMission: startMission,
+  updateMissions: updateMissions,
+  completeMission: completeMission,
+  failMission: failMission,
+  abortMission: abortMission,
+  moveMissionBeacon: moveMissionBeacon,
+  missionTarget: missionTarget,
+  nearPoint: nearPoint,
+  init: init,
+  start: start,
+  index: liveIndex,
+  active: liveActive,
+  timer: liveTimer,
+  phase: livePhase
+};
+
+// The live properties are accessors over the module variables, so a
+// read always sees the current job (and the harness can set the index).
+Object.defineProperty(window.NBMissions, 'index', {
+  get: function () { return liveIndex; },
+  set: function (v) { liveIndex = v; }
+});
+Object.defineProperty(window.NBMissions, 'active', {
+  get: function () { return liveActive; }
+});
+Object.defineProperty(window.NBMissions, 'timer', {
+  get: function () { return liveTimer; },
+  set: function (v) { liveTimer = v; }
+});
+Object.defineProperty(window.NBMissions, 'phase', {
+  get: function () { return livePhase; }
+});

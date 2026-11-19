@@ -1,104 +1,114 @@
-/* Neon Bay — HUD and menu styling (v5 rebuild). */
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; overflow: hidden; background: #0b0812; font-family: 'Segoe UI', Arial, sans-serif; color: #f2f2f2; }
-#app, #app canvas { position: fixed; inset: 0; display: block; }
-#hud { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+/* Neon Bay — HUD and menu styling. Dark glass panels, gold accents,
+   white text. The HUD never intercepts clicks (pointer-events: none)
+   except for the menu buttons. */
 
-/* Mission box: top-left. */
-#missionBox {
-  position: absolute; top: 14px; left: 14px; max-width: 430px;
-  background: rgba(12, 8, 22, 0.72); border: 1px solid #ffb300;
-  border-left: 5px solid #ffb300; border-radius: 8px; padding: 10px 14px;
+html, body {
+  margin: 0; padding: 0; overflow: hidden; height: 100%;
+  background: #1a1426;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: #fff;
 }
-#missionTitle { font-size: 17px; font-weight: 800; letter-spacing: 1px; color: #ffd76a; }
-#missionText { font-size: 14px; line-height: 1.35; margin-top: 4px; }
-#missionTimer { font-size: 20px; font-weight: 800; color: #ff6b6b; margin-top: 4px; }
 
-/* Objective guide: top-centre. The probe reads display:block. */
-#objGuide {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-  display: block; text-align: center; font-size: 22px; font-weight: 800;
-  color: #ffe14d; text-shadow: 0 2px 6px #000, 0 0 2px #000;
+#game-container { position: fixed; inset: 0; }
+#game-container canvas { display: block; }
+
+#hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+
+/* mission box: top-left */
+#mission-box {
+  position: absolute; top: 14px; left: 16px;
+  background: rgba(16, 10, 26, 0.72);
+  border: 1px solid rgba(255, 210, 122, 0.55);
+  border-left: 4px solid #ffd27a;
+  border-radius: 8px;
+  padding: 10px 14px;
+  max-width: 340px;
 }
-#objArrow { display: inline-block; font-size: 26px; margin-right: 8px; }
-#objDist { font-size: 22px; }
+#mission-title { color: #ffd27a; font-weight: 800; font-size: 17px; letter-spacing: 1px; }
+#mission-text { font-size: 14px; margin-top: 4px; line-height: 1.35; }
+#mission-reward { color: #7cff5e; font-weight: 700; font-size: 14px; margin-top: 4px; }
+#mission-timer { color: #ff5e5e; font-weight: 800; font-size: 16px; margin-top: 2px; }
 
-/* Honest label toast: top-centre, just below the mission box. */
+/* objective arrow: top-centre, big gold shafted arrow + distance */
+#objective {
+  position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+  text-align: center; line-height: 1;
+}
+#objArrow {
+  display: inline-block;
+  font-size: 44px; color: #ffd700;
+  text-shadow: 0 0 8px rgba(255, 215, 0, 0.8), 0 2px 3px rgba(0, 0, 0, 0.9);
+}
+#objDist {
+  display: inline-block;
+  font-size: 18px; font-weight: 800; color: #ffd700;
+  text-shadow: 0 2px 3px rgba(0, 0, 0, 0.9);
+  margin-left: 6px; vertical-align: 12px;
+}
+
+/* toast: one honest label, top-centre below the arrow */
 #toast {
-  position: absolute; top: 110px; left: 50%; transform: translateX(-50%);
-  display: none; max-width: 640px; text-align: center; font-size: 18px; font-weight: 700;
-  color: #fff; background: rgba(12, 8, 22, 0.78); border: 1px solid #ffb300;
-  border-radius: 8px; padding: 10px 18px; text-shadow: 0 1px 3px #000;
+  position: absolute; top: 72px; left: 50%; transform: translateX(-50%);
+  background: rgba(16, 10, 26, 0.82);
+  border: 1px solid rgba(255, 210, 122, 0.6);
+  color: #ffd27a; font-weight: 800; font-size: 16px; letter-spacing: 0.5px;
+  padding: 8px 18px; border-radius: 20px;
+  white-space: nowrap; max-width: 92vw; overflow: hidden; text-overflow: ellipsis;
 }
 
-/* Money / stars / health: top-right. */
-#topRight { position: absolute; top: 14px; right: 14px; text-align: right; }
-#money { font-size: 24px; font-weight: 800; color: #7cfc9a; text-shadow: 0 2px 4px #000; }
-#stars { font-size: 22px; color: #ffd76a; letter-spacing: 2px; text-shadow: 0 2px 4px #000; margin-top: 2px; }
-#healthBar { width: 170px; height: 12px; background: rgba(0,0,0,0.6); border: 1px solid #888; border-radius: 6px; margin-top: 6px; overflow: hidden; }
-#healthFill { height: 100%; width: 100%; background: linear-gradient(90deg, #ff5252, #ff8a5a); }
-#healthText { font-size: 13px; color: #ffb3b3; margin-top: 2px; }
-#healthText::before { content: "HEALTH "; color: #ccc; }
-
-/* Speed: bottom-left, only while driving. */
-#speedo {
-  position: absolute; left: 16px; bottom: 16px; display: none;
-  font-size: 30px; font-weight: 800; color: #fff; text-shadow: 0 2px 6px #000;
+/* minimap: top-right, with a readable legend */
+#minimap-wrap { position: absolute; top: 14px; right: 16px; text-align: right; }
+#minimap {
+  border: 2px solid rgba(255, 210, 122, 0.6); border-radius: 8px;
+  background: #241f33; display: block;
 }
-#speedo::after { content: ""; }
-
-/* Minimap + legend: bottom-right. */
-#minimapWrap { position: absolute; right: 14px; bottom: 14px; text-align: right; }
-#minimap { width: 168px; height: 168px; border-radius: 50%; border: 2px solid #555a66; background: #12141a; }
-#mapLegend { font-size: 11.5px; line-height: 1.4; color: #ddd; background: rgba(12, 8, 22, 0.72); border-radius: 6px; padding: 6px 8px; margin-top: 6px; text-align: left; max-width: 260px; }
-
-/* Interaction prompt + controls hint: bottom-centre. */
-#prompt {
-  position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%);
-  display: none; font-size: 17px; font-weight: 700; color: #ffe14d;
-  background: rgba(12, 8, 22, 0.78); border: 1px solid #ffe14d; border-radius: 8px; padding: 8px 16px;
+#legend {
+  font-size: 11px; color: #ddd; margin-top: 4px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
 }
-#controlsHint {
-  position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
-  font-size: 13px; color: #cfcfcf; background: rgba(12, 8, 22, 0.6);
-  border-radius: 6px; padding: 6px 12px; white-space: nowrap;
+
+/* stats: bottom-left, clear of the frame edge */
+#stats { position: absolute; left: 16px; bottom: 16px; }
+#cash { color: #7cff5e; font-size: 26px; font-weight: 800; text-shadow: 0 2px 3px rgba(0,0,0,0.9); }
+#health { margin-top: 6px; }
+#health-label { font-size: 15px; font-weight: 800; text-shadow: 0 2px 3px rgba(0,0,0,0.9); }
+#health-bar {
+  width: 170px; height: 12px; margin-top: 3px;
+  background: rgba(0, 0, 0, 0.6); border: 1px solid rgba(255,255,255,0.5); border-radius: 6px;
+  overflow: hidden;
 }
+#health-fill { height: 100%; width: 100%; background: #ff5e5e; }
+#wanted { color: #ffd700; font-size: 26px; letter-spacing: 3px; margin-top: 4px; text-shadow: 0 2px 3px rgba(0,0,0,0.9); }
+#speed { font-size: 20px; font-weight: 800; margin-top: 2px; text-shadow: 0 2px 3px rgba(0,0,0,0.9); }
+
+/* crosshair: centred +, only while armed on foot */
 #crosshair {
   position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-  display: none; font-size: 26px; font-weight: 800; color: #fff; text-shadow: 0 0 4px #000;
-}
-#damageFlash {
-  position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 30, 30, 0.55) 100%);
-  opacity: 0; transition: opacity 0.12s; pointer-events: none;
+  font-size: 30px; font-weight: 800; color: #fff;
+  text-shadow: 0 0 4px #000, 0 0 2px #000;
 }
 
-/* Centre banner. */
-#banner {
-  position: absolute; top: 34%; left: 50%; transform: translate(-50%, -50%);
-  display: none; text-align: center; pointer-events: none;
+/* menu / pause / death / busted overlays */
+#menu, #pause-menu, #death-screen, #busted-screen {
+  position: fixed; inset: 0; z-index: 20;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(10, 6, 18, 0.62);
 }
-#bannerTitle { font-size: 44px; font-weight: 900; letter-spacing: 3px; color: #ffd76a; text-shadow: 0 3px 10px #000, 0 0 24px rgba(255, 179, 0, 0.6); }
-#bannerText { font-size: 19px; color: #fff; text-shadow: 0 2px 6px #000; margin-top: 6px; }
-
-/* Menus. */
-#menu, #pauseMenu, #deathScreen {
-  position: fixed; inset: 0; display: none; align-items: center; justify-content: center;
-  background: rgba(8, 5, 16, 0.72); z-index: 10;
+#death-screen, #busted-screen { background: rgba(10, 6, 18, 0.78); }
+.panel { text-align: center; max-width: 560px; padding: 30px; }
+.panel h1 {
+  font-size: 64px; margin: 0; letter-spacing: 6px; color: #ffd27a;
+  text-shadow: 0 0 24px rgba(255, 180, 60, 0.55), 0 4px 8px rgba(0,0,0,0.9);
 }
-#menu { display: flex; }
-.menuCard {
-  max-width: 620px; width: 92%; text-align: center; padding: 28px 30px;
-  background: rgba(16, 10, 28, 0.92); border: 1px solid #ffb300; border-radius: 14px;
+.panel h1.wasted { color: #ff5e5e; }
+.panel h1.busted { color: #5e9bff; }
+.panel .tagline { font-size: 19px; color: #ffd27a; font-weight: 700; margin: 8px 0; }
+.panel p { font-size: 15px; line-height: 1.5; }
+.panel .controls { font-size: 13px; color: #ccc; }
+.panel button {
+  pointer-events: auto; cursor: pointer;
+  background: #ffd27a; color: #1a1426; border: none; border-radius: 8px;
+  font-size: 19px; font-weight: 800; letter-spacing: 2px;
+  padding: 13px 34px; margin: 10px 6px 0;
 }
-.menuCard h1 { font-size: 52px; letter-spacing: 6px; margin: 0 0 6px; color: #ffd76a; text-shadow: 0 0 26px rgba(255, 179, 0, 0.55); }
-.menuCard h2 { font-size: 20px; color: #ffd76a; margin: 14px 0 6px; }
-.menuCard .tagline { font-size: 16px; color: #ffb3d9; margin: 0 0 12px; }
-.menuCard .story { font-size: 14.5px; line-height: 1.5; color: #e6e6e6; }
-.menuCard p { text-align: left; font-size: 13.5px; line-height: 1.5; }
-.menuCard button {
-  display: block; width: 100%; margin: 9px 0; padding: 13px; font-size: 17px; font-weight: 800;
-  letter-spacing: 1px; color: #1a1024; background: #ffb300; border: none; border-radius: 9px; cursor: pointer;
-}
-.menuCard button:hover { background: #ffd76a; }
-#howBox { display: none; text-align: left; margin-top: 10px; border-top: 1px solid #555; padding-top: 6px; }
-#deathTitle { color: #ff5252 !important; text-shadow: 0 0 26px rgba(255, 42, 42, 0.6) !important; }
+.panel button:hover { background: #ffe1a0; }
