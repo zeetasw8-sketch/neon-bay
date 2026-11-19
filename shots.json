@@ -1,1 +1,1 @@
-{"shots":[{"label":"3★ WANTED — BANK HEIST — POLICE CHASE — JOB 6: THE BIG ONE","name":"1-chase"},{"label":"PISTOL FIGHT — 3 THUGS — JOB 5: DOCKSIDE TROUBLE","name":"2-mission"},{"label":"TIMED DELIVERY — 100s — JOB 2: HOT DELIVERY","name":"3-drive"},{"label":"2★ WANTED — LOSE THE HEAT — JOB 4","name":"4-escape"}]}
+[{"name":"1-chase.jpg","query":"?shot=chase&seed=1"},{"name":"2-mission.jpg","query":"?shot=mission&seed=1"},{"name":"3-drive.jpg","query":"?shot=drive&seed=1"},{"name":"4-escape.jpg","query":"?shot=escape&seed=1"}]

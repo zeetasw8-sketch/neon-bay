@@ -1,98 +1,135 @@
 // Neon Bay — keyboard and mouse input.
-// Keys are read by e.code (never e.key: Shift would turn 'w' into 'W').
-// The input state is exposed read-only; the game consumes one-frame
-// "pressed" edges, the menu consumes clicks, the camera consumes drags.
+// Keys are tracked by event.code (ShiftLeft, KeyW, ...) so the sprint
+// check can never miss because of letter case. The queue can be wiped
+// clean whenever the game shows a death screen or resumes, so a stale
+// Escape pressed on the WASTED screen never pauses the game later.
 
-// readMoveInput returns the current WASD / arrow movement as { x, z }:
-// +x east, +z south, already normalised (no diagonal speed boost).
-function readMoveInput() {
-  var x = 0, z = 0;
-  if (held.KeyW || held.ArrowUp) z -= 1;
-  if (held.KeyS || held.ArrowDown) z += 1;
-  if (held.KeyA || held.ArrowLeft) x -= 1;
-  if (held.KeyD || held.ArrowRight) x += 1;
-  if (x !== 0 && z !== 0) { x *= 0.7071; z *= 0.7071; }
-  return { x: x, z: z };
+export class Input {
+  constructor() {
+    this.down = new Set(); // codes currently held
+    this.pressed = new Set(); // codes tapped since last frame
+    this.dragDX = 0; // mouse drag accumulated this frame
+    this.dragDY = 0;
+    this.wheel = 0; // wheel steps accumulated this frame
+    this.mouseDown = false;
+    this.clicked = false;
+    this.dragging = false;
+    this.lastX = 0;
+    this.lastY = 0;
+    this._onKeyDown = (e) => this._key(e, true);
+    this._onKeyUp = (e) => this._key(e, false);
+    this._onMouseDown = (e) => {
+      if (e.button === 0) {
+        this.mouseDown = true;
+        // Do NOT fire on press: a drag orbits the camera and must not
+        // shoot. The click is decided on release (see _onMouseUp).
+        this.dragging = true;
+        this._downX = e.clientX;
+        this._downY = e.clientY;
+        this.lastX = e.clientX;
+        this.lastY = e.clientY;
+      }
+    };
+    this._onMouseUp = (e) => {
+      if (e.button === 0) {
+        this.mouseDown = false;
+        this.dragging = false;
+        // A real click barely moves; a camera drag moves a lot.
+        if (
+          this._downX !== undefined &&
+          Math.hypot(e.clientX - this._downX, e.clientY - this._downY) < 6
+        ) {
+          this.clicked = true;
+        }
+      }
+    };
+    this._onMouseMove = (e) => {
+      if (!this.dragging) return;
+      this.dragDX += e.clientX - this.lastX;
+      this.dragDY += e.clientY - this.lastY;
+      this.lastX = e.clientX;
+      this.lastY = e.clientY;
+    };
+    this._onWheel = (e) => {
+      this.wheel += Math.sign(e.deltaY);
+    };
+    this._onBlur = () => this.clear();
+  }
+
+  attach(el) {
+    window.addEventListener("keydown", this._onKeyDown);
+    window.addEventListener("keyup", this._onKeyUp);
+    el.addEventListener("mousedown", this._onMouseDown);
+    window.addEventListener("mouseup", this._onMouseUp);
+    window.addEventListener("mousemove", this._onMouseMove);
+    el.addEventListener("wheel", this._onWheel, { passive: true });
+    window.addEventListener("blur", this._onBlur);
+  }
+
+  _key(e, isDown) {
+    // Keep the browser from scrolling or tabbing away mid-game.
+    if (
+      ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Tab"].includes(
+        e.code,
+      )
+    ) {
+      e.preventDefault();
+    }
+    if (isDown) {
+      if (!this.down.has(e.code)) this.pressed.add(e.code);
+      this.down.add(e.code);
+    } else {
+      this.down.delete(e.code);
+    }
+  }
+
+  // Held right now?
+  held(code) {
+    return this.down.has(code);
+  }
+
+  // Tapped since the last endFrame()?
+  tapped(code) {
+    return this.pressed.has(code);
+  }
+
+  get sprint() {
+    return this.down.has("ShiftLeft") || this.down.has("ShiftRight");
+  }
+
+  get forward() {
+    return this.down.has("KeyW") || this.down.has("ArrowUp");
+  }
+
+  get back() {
+    return this.down.has("KeyS") || this.down.has("ArrowDown");
+  }
+
+  get left() {
+    return this.down.has("KeyA") || this.down.has("ArrowLeft");
+  }
+
+  get right() {
+    return this.down.has("KeyD") || this.down.has("ArrowRight");
+  }
+
+  // Drop every held key and every tap. Called when the death screen
+  // appears and when play resumes, so no stale key leaks through.
+  clear() {
+    this.down.clear();
+    this.pressed.clear();
+    this.dragDX = 0;
+    this.dragDY = 0;
+    this.wheel = 0;
+    this.clicked = false;
+  }
+
+  // Call once per frame, after the game has read this frame's input.
+  endFrame() {
+    this.pressed.clear();
+    this.dragDX = 0;
+    this.dragDY = 0;
+    this.wheel = 0;
+    this.clicked = false;
+  }
 }
-
-// isSprinting reports whether the run key (Shift) is held.
-function isSprinting() {
-  return !!held.ShiftLeft || !!held.ShiftRight;
-}
-
-// consumePressed returns true once for a key pressed this frame and
-// clears the edge, so one physical press never fires twice.
-function consumePressed(code) {
-  if (pressed[code]) { pressed[code] = false; return true; }
-  return false;
-}
-
-// wasClicked returns true once for a left mouse button press this frame.
-function wasClicked() {
-  if (clicked) { clicked = false; return true; }
-  return false;
-}
-
-// getDrag returns the accumulated mouse-drag delta since the last call
-// ({ dx, dy } in pixels) and zeroes the accumulator.
-function getDrag() {
-  var d = { dx: dragDX, dy: dragDY };
-  dragDX = 0; dragDY = 0;
-  return d;
-}
-
-// getWheel returns the accumulated mouse-wheel delta since the last call.
-function getWheel() {
-  var w = wheelDY;
-  wheelDY = 0;
-  return w;
-}
-
-// clearAll forgets every held key and edge (used on death and respawn so a
-// key held through the death screen does not act on the fresh life).
-function clearAll() {
-  held = {}; pressed = {}; clicked = false; dragDX = 0; dragDY = 0;
-}
-
-var held = {};
-var pressed = {};
-var clicked = false;
-var dragDX = 0, dragDY = 0, wheelDY = 0;
-var dragging = false;
-
-window.addEventListener('keydown', function (e) {
-  if (!held[e.code]) pressed[e.code] = true; // edge on first press only
-  held[e.code] = true;
-  if (e.code === 'Space') e.preventDefault();
-});
-
-window.addEventListener('keyup', function (e) { held[e.code] = false; });
-
-window.addEventListener('mousedown', function (e) {
-  if (e.button !== 0) return;
-  clicked = true;
-  dragging = true;
-});
-
-window.addEventListener('mouseup', function () { dragging = false; });
-
-window.addEventListener('mousemove', function (e) {
-  if (!dragging) return;
-  dragDX += e.movementX || 0;
-  dragDY += e.movementY || 0;
-});
-
-window.addEventListener('wheel', function (e) { wheelDY += e.deltaY || 0; });
-
-window.addEventListener('blur', clearAll);
-
-window.NBInput = {
-  readMoveInput: readMoveInput,
-  isSprinting: isSprinting,
-  consumePressed: consumePressed,
-  wasClicked: wasClicked,
-  getDrag: getDrag,
-  getWheel: getWheel,
-  clearAll: clearAll,
-  held: held
-};

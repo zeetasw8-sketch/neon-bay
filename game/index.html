@@ -1,106 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Neon Bay — Open-World Crime</title>
-<link rel="icon" href="data:,">
-<link rel="stylesheet" href="style.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Bay — open-world crime</title>
+<link rel="stylesheet" href="./style.css">
+<!-- three.js is vendored as a UMD build; the classic script below sets
+     window.THREE before the game's modules run. -->
+<script src="./vendor/three.min.js"></script>
 </head>
 <body>
-<div id="game-container"></div>
+<canvas id="game-canvas"></canvas>
 
+<!-- Damage flash overlay -->
+<div id="damage-flash"></div>
+
+<!-- HUD -->
 <div id="hud">
-  <!-- mission box: Mara's line, the reward and the timer (top-left) -->
+  <div id="top-left">
+    <div id="money">$0</div>
+    <div id="health-bar"><div id="health-fill"></div></div>
+    <div id="wanted-stars">☆☆☆☆☆</div>
+  </div>
+
   <div id="mission-box">
     <div id="mission-title">NEON BAY</div>
-    <div id="mission-text">Take a job from Mara.</div>
-    <div id="mission-reward"></div>
-    <div id="mission-timer"></div>
+    <div id="mission-text">Welcome to Neon Bay</div>
+    <div id="mission-timer" style="display:none">0s</div>
   </div>
 
-  <!-- objective arrow: a shafted ⬆ (U+2B06), rotated to the objective -->
-  <div id="objective">
-    <span id="objArrow">⬆</span>
-    <span id="objDist"></span>
+  <div id="obj-arrow-box">
+    <span id="obj-arrow">⬆</span>
+    <span id="obj-dist">0 m</span>
   </div>
 
-  <!-- toast: shot labels, Mara's lines, payouts (top-centre) -->
-  <div id="toast" style="display:none"></div>
+  <div id="toast"></div>
+  <div id="banner"></div>
 
-  <!-- minimap + legend (top-right) -->
+  <div id="dialogue">
+    <div id="dialogue-title">MARA VOSS</div>
+    <div id="dialogue-text"></div>
+  </div>
+
+  <div id="crosshair" style="display:none">+</div>
+  <div id="speed" style="display:none">0 mph</div>
+  <div id="prompt" style="display:none"></div>
+
   <div id="minimap-wrap">
     <canvas id="minimap" width="180" height="180"></canvas>
-    <div id="legend">WHITE you &nbsp;•&nbsp; GOLD objective &nbsp;•&nbsp; RED police &nbsp;•&nbsp; ORANGE thug</div>
-  </div>
-
-  <!-- stats (bottom-left): cash, health, wanted stars, speed -->
-  <div id="stats">
-    <div id="cash">$0</div>
-    <div id="health">
-      <span id="health-label">HEALTH 100</span>
-      <div id="health-bar"><div id="health-fill"></div></div>
+    <div id="minimap-legend">
+      <div><span class="lg-white">▲</span> you</div>
+      <div><span class="lg-yellow">●</span> traffic</div>
+      <div><span class="lg-red">●</span> police</div>
+      <div><span class="lg-gold">◎</span> objective</div>
+      <div><span class="lg-green">■</span> garage</div>
+      <div><span class="lg-gold">■</span> bank</div>
+      <div><span class="lg-white">■</span> hospital</div>
     </div>
-    <div id="wanted">☆☆☆</div>
-    <div id="speed">0 mph</div>
   </div>
 
-  <!-- crosshair: shown while on foot with the pistol -->
-  <div id="crosshair" style="display:none">+</div>
+  <div id="controls-hint">WASD move · SHIFT sprint · E enter car · F punch · CLICK shoot · R retry · P pause · M mute</div>
 </div>
 
-<!-- start menu -->
-<div id="menu">
-  <div class="panel">
-    <h1>NEON BAY</h1>
-    <p class="tagline">Six jobs. One city. Three stars of heat.</p>
-    <p>Drive and walk a 5×5-block city at sunset. Take jobs from your fixer
-    Mara Voss, steal the case, lose the cops, get home.</p>
-    <p class="controls">WASD move &nbsp;•&nbsp; SHIFT run &nbsp;•&nbsp; E enter / exit car &nbsp;•&nbsp;
-    F punch &nbsp;•&nbsp; CLICK shoot &nbsp;•&nbsp; DRAG look &nbsp;•&nbsp; WHEEL zoom &nbsp;•&nbsp; M mute</p>
-    <button id="btnStart">START</button>
-    <button id="btnContinue" style="display:none">CONTINUE</button>
+<!-- Start menu -->
+<div id="menu" class="overlay show">
+  <h1>NEON BAY</h1>
+  <p class="tagline">Six jobs. One city. Three stars of heat.</p>
+  <p class="story">You are Dex Marlowe, a driver fresh out of luck. Your fixer Mara Voss
+  has six jobs for you, from a quiet pickup at the pier to the big one at
+  the bank. Steal the case, lose the cops, get home.</p>
+  <button id="btn-start">NEW GAME</button>
+  <button id="btn-continue">CONTINUE</button>
+  <button id="btn-howto">HOW TO PLAY</button>
+  <p class="fine">An original open-world crime game. Three.js. No network needed.</p>
+</div>
+
+<!-- Pause menu -->
+<div id="pause-menu" class="overlay">
+  <h1>PAUSED</h1>
+  <button id="btn-resume">RESUME</button>
+  <button id="btn-restart">RESTART JOB</button>
+  <button id="btn-pause-howto">HOW TO PLAY</button>
+  <button id="btn-mute">MUTE</button>
+  <button id="btn-quit">QUIT TO MENU</button>
+</div>
+
+<!-- Wasted screen -->
+<div id="wasted-screen" class="overlay">
+  <h1 class="dead">WASTED</h1>
+  <p id="wasted-fine">Fine paid: $0</p>
+  <button id="btn-wasted">CONTINUE</button>
+</div>
+
+<!-- Busted screen -->
+<div id="busted-screen" class="overlay">
+  <h1 class="dead">BUSTED</h1>
+  <p id="busted-fine">Fine paid: $0</p>
+  <button id="btn-busted">CONTINUE</button>
+</div>
+
+<!-- How to play -->
+<div id="howto" class="overlay">
+  <h1>HOW TO PLAY</h1>
+  <div class="howto-body">
+    <p><b>Move</b> — WASD / arrows. <b>Sprint</b> — hold SHIFT. <b>Camera</b> — drag the mouse, wheel zooms.</p>
+    <p><b>Enter / exit a car</b> — E near a car (stealing one raises wanted by 1★, except your own car by the garage).</p>
+    <p><b>Punch</b> — F. <b>Shoot</b> — click, once you have the pistol (Job 5). A shot that misses raises no heat.</p>
+    <p><b>Wanted</b> — 0 to 5 stars. One police car chases per star. Stay slow and close to a police car for 2 seconds and you get busted. Lay low and the heat fades, one star at a time.</p>
+    <p><b>Jobs</b> — follow the gold beacon and the ⬆ arrow. Six jobs from Mara Voss, $3,550 in total. Finish all six to become a Neon Bay Legend.</p>
+    <p><b>Retry</b> — R restarts the current job at the garage. <b>Pause</b> — P or ESC. <b>Mute</b> — M. The game saves automatically.</p>
+    <p><b>Minimap</b> — ▲ is you, ● yellow is traffic, ● red is police, ◎ gold-ringed is the objective, ■ green the garage, ■ gold the bank, ■ white the hospital. N is north.</p>
   </div>
+  <button id="btn-howto-close">CLOSE</button>
 </div>
 
-<!-- pause menu (ESC) -->
-<div id="pause-menu" style="display:none">
-  <div class="panel">
-    <h1>PAUSED</h1>
-    <p>Take a breath. Neon Bay waits.</p>
-    <button id="btnResume">RESUME</button>
-  </div>
-</div>
-
-<!-- WASTED screen -->
-<div id="death-screen" style="display:none">
-  <div class="panel">
-    <h1 class="wasted">WASTED</h1>
-    <p id="death-fine">You lost $150</p>
-    <button id="death-continue">CONTINUE</button>
-  </div>
-</div>
-
-<!-- BUSTED screen -->
-<div id="busted-screen" style="display:none">
-  <div class="panel">
-    <h1 class="busted">BUSTED</h1>
-    <p id="busted-fine">You lost $150</p>
-    <button id="busted-continue">CONTINUE</button>
-  </div>
-</div>
-
-<script src="vendor/three.min.js"></script>
-<script src="src/config.js"></script>
-<script src="src/input.js"></script>
-<script src="src/audio.js"></script>
-<script src="src/world.js"></script>
-<script src="src/vehicles.js"></script>
-<script src="src/people.js"></script>
-<script src="src/police.js"></script>
-<script src="src/combat.js"></script>
-<script src="src/missions.js"></script>
-<script src="src/hud.js"></script>
-<script src="src/main.js"></script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>

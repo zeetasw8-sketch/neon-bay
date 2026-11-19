@@ -1,490 +1,480 @@
-// Neon Bay — the city: ground, buildings, roads, landmarks, props, sea.
-// The city is a 5x5-block grid (400x400 m) at a static purple dusk.
-// Static geometry is merged into a few draw calls; the ground is a single
-// canvas texture (roads, sidewalks, lane marks, crosswalks in one plane).
-// buildCity returns the world object the game loop and the other modules
-// use: colliders, the objective beacon, landmark positions, spawn points.
+// Neon Bay — the city itself.
+// A 5x5-block warm-dusk city: streets, lit buildings with neon roofs,
+// sand and sea to the south, a wooden pier, and the three landmarks
+// (garage, bank, hospital). One ground texture draws the whole road
+// grid in a single mesh. The gold objective beacon lives here too.
+// Collision is circle-vs-box against the building footprints, plus an
+// invisible shore wall that keeps everyone out of the open sea.
 
-// buildCity fills `scene` with the whole city and returns the world object.
-function buildCity(scene) {
-  NBWorld.scene = scene; // the shot tool stages cops through NBWorld.scene
-  var world = {
-    scene: scene,
-    colliders: [],   // { x, z, hw, hd } rects and { x, z, r } circles
-    beacon: null,    // the gold objective beam (moved by missions)
-    beaconBase: null,
-    garageDoor: null,
-    bankDoor: null
-  };
+import { THREE } from "./three-shim.js";
+import { WORLD, LIGHT } from "./config.js";
 
-  makeSky(scene);
-  makeGround(scene);
-  makeSea(scene, world);
-  makeBuildings(scene, world);
-  makeGarage(scene, world);
-  makeBank(scene, world);
-  makeHospital(scene, world);
-  makePier(scene, world);
-  makeProps(scene, world);
-  makeBeacon(scene, world);
-
-  return world;
+function hash2(ix, iz) {
+  // Deterministic pseudo-random from block indices, so the city is
+  // identical on every load.
+  let h = (ix * 374761393 + iz * 668265263) | 0;
+  h = (h ^ (h >> 13)) | 0;
+  h = Math.imul(h, 1274126177);
+  h = (h ^ (h >> 16)) >>> 0;
+  return h / 4294967295;
 }
 
-// makeSky sets the dusk background, fog and the two lights (hemi + sun).
-function makeSky(scene) {
-  var C = NBConfig;
-  scene.background = new THREE.Color(C.sky);
-  scene.fog = new THREE.Fog(C.fog, 120, 420);
-  var hemi = new THREE.HemisphereLight(C.hemiSky, C.hemiGround, C.hemiIntensity);
+function makeWindowTexture(litRatio, tint) {
+  // A canvas of windows: some lit warm, some dark. Used as the map
+  // and the emissive map of a building's sides.
+  const c = document.createElement("canvas");
+  c.width = 128;
+  c.height = 256;
+  const g = c.getContext("2d");
+  g.fillStyle = tint;
+  g.fillRect(0, 0, 128, 256);
+  const cols = 6;
+  const rows = 12;
+  const ww = 128 / cols;
+  const wh = 256 / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const lit = Math.random() < litRatio;
+      g.fillStyle = lit ? "#ffd98a" : "#1c2436";
+      g.fillRect(col * ww + 3, r * wh + 4, ww - 6, wh - 8);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeGroundTexture() {
+  // One 1024 canvas for the whole city floor: asphalt, road strips,
+  // lane dashes and sidewalk borders, mapped to the street grid.
+  const S = 1024;
+  const c = document.createElement("canvas");
+  c.width = S;
+  c.height = S;
+  const g = c.getContext("2d");
+  const span = 280; // world units across the texture (-140..140)
+  const toPx = (v) => ((v + 140) / span) * S;
+  g.fillStyle = "#23232b";
+  g.fillRect(0, 0, S, S);
+  // Sidewalk borders: a lighter frame around every block.
+  g.fillStyle = "#3a3a44";
+  const blockCentres = [-100, -50, 0, 50, 100];
+  for (const bx of blockCentres) {
+    for (const bz of blockCentres) {
+      g.fillRect(toPx(bx - 19), toPx(bz - 19), toPx(38) - toPx(0), toPx(38) - toPx(0));
+    }
+  }
+  // Road strips.
+  g.fillStyle = "#2e2e38";
+  for (const s of WORLD.streets) {
+    g.fillRect(toPx(s - WORLD.streetHalf), 0, toPx(2 * WORLD.streetHalf) - toPx(0), S);
+    g.fillRect(0, toPx(s - WORLD.streetHalf), S, toPx(2 * WORLD.streetHalf) - toPx(0));
+  }
+  // Centre dashes, gold along the roads.
+  g.fillStyle = "#c9a227";
+  for (const s of WORLD.streets) {
+    for (let v = -135; v < 135; v += 12) {
+      g.fillRect(toPx(s) - 2, toPx(v), 4, 14);
+      g.fillRect(toPx(v), toPx(s) - 2, 14, 4);
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  return tex;
+}
+
+function makeSkyTexture() {
+  // Warm dusk gradient: deep purple overhead, amber at the horizon.
+  const c = document.createElement("canvas");
+  c.width = 4;
+  c.height = 256;
+  const g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0, "#2a1740");
+  grad.addColorStop(0.55, "#5c2f56");
+  grad.addColorStop(0.8, "#c97a3e");
+  grad.addColorStop(1, "#dd8a45");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+export function buildWorld(scene) {
+  const colliders = [];
+  const landmarks = {};
+
+  // --- Sky, fog and lights -------------------------------------------
+  const skyTex = makeSkyTexture();
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(900, 24, 16),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
+  );
+  scene.add(sky);
+
+  scene.fog = new THREE.Fog(LIGHT.fog, 120, 700);
+
+  const hemi = new THREE.HemisphereLight(
+    LIGHT.hemiSky,
+    LIGHT.hemiGround,
+    LIGHT.hemiIntensity,
+  );
   scene.add(hemi);
-  var sun = new THREE.DirectionalLight(C.sunColor, C.sunIntensity);
-  sun.position.set(C.sunPos.x, C.sunPos.y, C.sunPos.z);
+
+  const sun = new THREE.DirectionalLight(LIGHT.sunColor, LIGHT.sunIntensity);
+  sun.position.set(120, 180, 60);
   sun.castShadow = true;
   sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
-  sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
-  sun.shadow.camera.far = 400;
+  sun.shadow.camera.left = -90;
+  sun.shadow.camera.right = 90;
+  sun.shadow.camera.top = 90;
+  sun.shadow.camera.bottom = -90;
+  sun.shadow.camera.near = 10;
+  sun.shadow.camera.far = 500;
+  sun.shadow.bias = -0.0005;
   scene.add(sun);
-  worldSun = sun;
-}
+  scene.add(sun.target);
 
-// makeGround draws the whole 400x400 m ground (roads, sidewalks, lane
-// markings, crosswalks, block pavement) onto one canvas texture and lays
-// it on a single plane. 1 draw call for the entire street surface.
-function makeGround(scene) {
-  var S = 1024, m = S / 400; // pixels per metre
-  var cv = document.createElement('canvas');
-  cv.width = S; cv.height = S;
-  var g = cv.getContext('2d');
-  function px(x) { return (x + 200) * m; }
-  // base: block pavement
-  g.fillStyle = '#241f33'; g.fillRect(0, 0, S, S);
-  // roads (both axes)
-  g.fillStyle = '#17141f';
-  NBConfig.roadAt.forEach(function (c) {
-    g.fillRect(px(c - 7), 0, 14 * m, S);
-    g.fillRect(0, px(c - 7), S, 14 * m);
-  });
-  // sidewalks: lighter strips hugging each road
-  g.fillStyle = '#2e2942';
-  NBConfig.roadAt.forEach(function (c) {
-    g.fillRect(px(c - 9), 0, 2 * m, S);
-    g.fillRect(px(c + 7), 0, 2 * m, S);
-    g.fillRect(0, px(c - 9), S, 2 * m);
-    g.fillRect(0, px(c + 7), S, 2 * m);
-  });
-  // centre dashed lines
-  g.fillStyle = '#c9b458';
-  NBConfig.roadAt.forEach(function (c) {
-    for (var d = -195; d < 195; d += 10) {
-      g.fillRect(px(d), px(c - 0.4), 5 * m, 0.8 * m);
-      g.fillRect(px(c - 0.4), px(d), 0.8 * m, 5 * m);
-    }
-  });
-  // crosswalks at every intersection
-  g.fillStyle = '#cfc8e8';
-  NBConfig.roadAt.forEach(function (a) {
-    NBConfig.roadAt.forEach(function (b) {
-      for (var i = -3; i <= 3; i++) {
-        g.fillRect(px(a + i * 1.8 - 0.6), px(b - 6), 1.2 * m, 12 * m);
-      }
-    });
-  });
-  var tex = new THREE.CanvasTexture(cv);
-  tex.anisotropy = 4;
-  var ground = new THREE.Mesh(
-    new THREE.PlaneGeometry(400, 400),
-    new THREE.MeshLambertMaterial({ map: tex })
+  // Two real point lights only: the garage yard and the pier.
+  const yardLight = new THREE.PointLight(0xffb36b, 60, 45, 1.8);
+  yardLight.position.set(WORLD.garage.x, 6, WORLD.garage.z);
+  scene.add(yardLight);
+  const pierLight = new THREE.PointLight(0xffc46b, 50, 40, 1.8);
+  pierLight.position.set(0, 6, 148);
+  scene.add(pierLight);
+
+  // --- Ground, sand, sea, pier ---------------------------------------
+  const ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(280, 280),
+    new THREE.MeshLambertMaterial({ map: makeGroundTexture() }),
   );
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
-}
 
-// makeSea lays the dark water south of the sea wall (z > 206) and the
-// concrete wall itself. The player can walk the pier, not swim.
-function makeSea(scene, world) {
-  var sea = new THREE.Mesh(
-    new THREE.PlaneGeometry(400, 60),
-    new THREE.MeshLambertMaterial({ color: 0x0d1b2e, emissive: 0x06101f })
+  const sand = new THREE.Mesh(
+    new THREE.PlaneGeometry(280, WORLD.sandTo - WORLD.edge + 4),
+    // Unlit on purpose: the strong golden-hour light blows a lit sand
+    // plane out to pure white. A flat sandy tan reads as a beach.
+    new THREE.MeshBasicMaterial({ color: 0xc2a06b }),
+  );
+  sand.rotation.x = -Math.PI / 2;
+  sand.position.set(0, 0.02, (WORLD.edge + WORLD.sandTo) / 2);
+  sand.receiveShadow = true;
+  scene.add(sand);
+
+  const sea = new THREE.Mesh(
+    new THREE.PlaneGeometry(560, 160),
+    // Unlit on purpose, same reason as the sand: a flat sea blue.
+    new THREE.MeshBasicMaterial({ color: 0x1e5a7a }),
   );
   sea.rotation.x = -Math.PI / 2;
-  sea.position.set(0, -0.2, 236);
+  sea.position.set(0, 0.0, WORLD.seaAt + 80);
   scene.add(sea);
-  var wall = new THREE.Mesh(
-    new THREE.BoxGeometry(400, 1.2, 2),
-    new THREE.MeshLambertMaterial({ color: 0x3a3348 })
+
+  // Wooden pier deck, flush with the ground, over the water.
+  // Unlit, same blow-out reason as the sand: a flat wood tone.
+  const pierDeck = new THREE.Mesh(
+    new THREE.BoxGeometry(WORLD.pierHalf * 2, 0.3, WORLD.pierEnd - WORLD.edge + 6),
+    new THREE.MeshBasicMaterial({ color: 0x8a6a42 }),
   );
-  wall.position.set(0, 0.6, 206);
-  scene.add(wall);
-  addRectCollider(world, 0, 206, 200, 1);
-}
-
-// makeWindowTexture draws one facade tile: dark wall, a grid of windows,
-// some lit warm. The top-left corner is kept plain dark for roofs.
-function makeWindowTexture() {
-  var cv = document.createElement('canvas');
-  cv.width = 128; cv.height = 128;
-  var g = cv.getContext('2d');
-  g.fillStyle = '#191423'; g.fillRect(0, 0, 128, 128);
-  for (var row = 0; row < 8; row++) {
-    for (var col = 0; col < 4; col++) {
-      var lit = Math.random() < 0.42;
-      g.fillStyle = lit ? '#ffd27a' : '#0a0a14';
-      g.fillRect(10 + col * 30, 8 + row * 15, 18, 9);
-    }
+  pierDeck.position.set(0, 0.1, (WORLD.edge + WORLD.pierEnd) / 2);
+  pierDeck.receiveShadow = true;
+  scene.add(pierDeck);
+  // Plank seams across the deck.
+  const seamGeo = new THREE.BoxGeometry(WORLD.pierHalf * 2, 0.05, 0.35);
+  const seamMat = new THREE.MeshLambertMaterial({ color: 0x6b4e2e });
+  for (let z = WORLD.edge + 4; z < WORLD.pierEnd; z += 4) {
+    const seam = new THREE.Mesh(seamGeo, seamMat);
+    seam.position.set(0, 0.28, z);
+    scene.add(seam);
   }
-  g.fillStyle = '#0d0b14'; g.fillRect(0, 0, 8, 8); // roof patch
-  var tex = new THREE.CanvasTexture(cv);
-  tex.wrapS = THREE.RepeatWrapping; tex.wrapT = THREE.RepeatWrapping;
-  return tex;
-}
 
-// appendBox pushes one axis-aligned box into the growing merge arrays.
-// uvSX/uvSY tile the window texture across the side faces; the top face
-// maps to the plain roof patch. `tint` is an [r,g,b] facade colour.
-function appendBox(arr, x, y, z, w, h, d, uvSX, uvSY, tint) {
-  var x0 = x - w / 2, x1 = x + w / 2;
-  var y0 = y, y1 = y + h;
-  var z0 = z - d / 2, z1 = z + d / 2;
-  // each face: 4 corners [pos, uv], normal
-  var faces = [
-    { n: [0, 0, 1], v: [[x0, y0, z1, 0, 0], [x1, y0, z1, uvSX, 0], [x1, y1, z1, uvSX, uvSY], [x0, y1, z1, 0, uvSY]] },
-    { n: [0, 0, -1], v: [[x1, y0, z0, 0, 0], [x0, y0, z0, uvSX, 0], [x0, y1, z0, uvSX, uvSY], [x1, y1, z0, 0, uvSY]] },
-    { n: [1, 0, 0], v: [[x1, y0, z1, 0, 0], [x1, y0, z0, uvSX, 0], [x1, y1, z0, uvSX, uvSY], [x1, y1, z1, 0, uvSY]] },
-    { n: [-1, 0, 0], v: [[x0, y0, z0, 0, 0], [x0, y0, z1, uvSX, 0], [x0, y1, z1, uvSX, uvSY], [x0, y1, z0, 0, uvSY]] },
-    { n: [0, 1, 0], v: [[x0, y1, z1, 0, 0], [x1, y1, z1, 0.06, 0], [x1, y1, z0, 0.06, 0.06], [x0, y1, z0, 0, 0.06]] },
-    { n: [0, -1, 0], v: [[x0, y0, z0, 0, 0], [x1, y0, z0, 0.06, 0], [x1, y0, z1, 0.06, 0.06], [x0, y0, z1, 0, 0.06]] }
+  // --- Buildings ------------------------------------------------------
+  const winTexA = makeWindowTexture(0.55, "#2b2f45");
+  const winTexB = makeWindowTexture(0.4, "#33283e");
+  const winTexC = makeWindowTexture(0.65, "#262b3d");
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0x1a1a22 });
+  const neonMats = [
+    new THREE.MeshBasicMaterial({ color: 0x22d3ee }),
+    new THREE.MeshBasicMaterial({ color: 0xf472b6 }),
+    new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
+    new THREE.MeshBasicMaterial({ color: 0x34d399 }),
   ];
-  faces.forEach(function (f) {
-    var base = arr.pos.length / 3;
-    f.v.forEach(function (p) {
-      arr.pos.push(p[0], p[1], p[2]);
-      arr.nor.push(f.n[0], f.n[1], f.n[2]);
-      arr.uv.push(p[3], p[4]);
-      arr.col.push(tint[0], tint[1], tint[2]);
+  const shopMat = new THREE.MeshBasicMaterial({ color: 0xffd98a });
+  const wallMats = [winTexA, winTexB, winTexC].map(
+    (t) =>
+      new THREE.MeshLambertMaterial({
+        map: t,
+        emissive: 0xffffff,
+        emissiveMap: t,
+        emissiveIntensity: 0.55,
+      }),
+  );
+
+  const blockCentres = [-100, -50, 0, 50, 100];
+  let tallest = null;
+  let tallestH = 0;
+  const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+  const stripGeo = new THREE.BoxGeometry(1, 0.35, 1);
+  const roofBoxGeo = new THREE.BoxGeometry(1, 1, 1);
+
+  function addBuilding(cx, cz, w, d, h, matIdx) {
+    const mesh = new THREE.Mesh(boxGeo, [
+      wallMats[matIdx],
+      wallMats[matIdx],
+      roofMat,
+      roofMat,
+      wallMats[matIdx],
+      wallMats[matIdx],
+    ]);
+    mesh.scale.set(w, h, d);
+    mesh.position.set(cx, h / 2, cz);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+    colliders.push({
+      minX: cx - w / 2,
+      maxX: cx + w / 2,
+      minZ: cz - d / 2,
+      maxZ: cz + d / 2,
     });
-    arr.idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
-  });
-}
-
-// makeBuildings fills every block with 2x2 buildings (merged into one
-// geometry, one draw call) and adds neon signs to a few of them.
-function makeBuildings(scene, world) {
-  var tex = makeWindowTexture();
-  var arr = { pos: [], nor: [], uv: [], col: [], idx: [] };
-  var tints = [[0.75, 0.72, 0.85], [0.85, 0.75, 0.7], [0.7, 0.8, 0.85], [0.85, 0.8, 0.75], [0.65, 0.65, 0.8]];
-  var centres = [-140, -70, 0, 70, 140];
-  var skip = { '0,140': 1, '-70,-70': 1, '140,-70': 1 }; // landmark blocks
-  centres.forEach(function (bx) {
-    centres.forEach(function (bz) {
-      if (skip[bx + ',' + bz]) return;
-      [[-14, -14], [14, -14], [-14, 14], [14, 14]].forEach(function (off) {
-        var w = 16 + Math.random() * 8, d = 16 + Math.random() * 8;
-        var h = 9 + Math.random() * 26;
-        var x = bx + off[0], z = bz + off[1];
-        var tint = tints[Math.floor(Math.random() * tints.length)];
-        appendBox(arr, x, 0, z, w, h, d, Math.max(1, w / 9), Math.max(1, h / 14), tint);
-        addRectCollider(world, x, z, w / 2, d / 2);
-      });
-    });
-  });
-  // a few taller towers near the centre
-  [[-35, -35], [35, 35], [0, -35]].forEach(function (p) {
-    appendBox(arr, p[0], 0, p[1], 20, 42 + Math.random() * 12, 20, 2.2, 3.4, [0.8, 0.78, 0.9]);
-    addRectCollider(world, p[0], p[1], 10, 10);
-  });
-  var geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(arr.pos, 3));
-  geo.setAttribute('normal', new THREE.Float32BufferAttribute(arr.nor, 3));
-  geo.setAttribute('uv', new THREE.Float32BufferAttribute(arr.uv, 2));
-  geo.setAttribute('color', new THREE.Float32BufferAttribute(arr.col, 3));
-  geo.setIndex(arr.idx);
-  var mat = new THREE.MeshLambertMaterial({
-    map: tex, emissiveMap: tex, emissive: 0x8a7a5a, vertexColors: true
-  });
-  var mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = true; mesh.receiveShadow = true;
-  scene.add(mesh);
-  // neon signs: bright unlit planes on some facades
-  var neonCols = [0x00e5ff, 0xff2ea6, 0xff9f1c, 0x7cff5e, 0xff5e5e];
-  for (var i = 0; i < 26; i++) {
-    var bx = centres[Math.floor(Math.random() * 5)];
-    var bz = centres[Math.floor(Math.random() * 5)];
-    var sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(6 + Math.random() * 6, 1.2),
-      new THREE.MeshBasicMaterial({ color: neonCols[i % neonCols.length] })
-    );
-    sign.position.set(bx + (Math.random() - 0.5) * 30, 6 + Math.random() * 14, bz + 29);
-    sign.rotation.y = Math.PI;
-    scene.add(sign);
+    // Neon strip along the roof edge.
+    if (hash2(cx, cz) > 0.45) {
+      const strip = new THREE.Mesh(stripGeo, neonMats[Math.floor(hash2(cz, cx) * 4) % 4]);
+      strip.scale.set(w * 0.96, 1, d * 0.96);
+      strip.position.set(cx, h + 0.2, cz);
+      scene.add(strip);
+    }
+    // A rooftop box on tall towers.
+    if (h > 26) {
+      const rb = new THREE.Mesh(roofBoxGeo, roofMat);
+      rb.scale.set(w * 0.3, 3, d * 0.3);
+      rb.position.set(cx, h + 1.5, cz);
+      scene.add(rb);
+    }
+    // A lit shopfront strip at street level on some buildings.
+    if (hash2(cx + 7, cz + 3) > 0.6) {
+      const shop = new THREE.Mesh(stripGeo, shopMat);
+      shop.scale.set(w * 0.9, 1, 0.4);
+      shop.position.set(cx, 1.6, cz + d / 2 + 0.1);
+      scene.add(shop);
+    }
+    if (h > tallestH) {
+      tallestH = h;
+      tallest = { x: cx, z: cz, h };
+    }
+    return mesh;
   }
-}
 
-// makeGarage builds the player's home base: a low warehouse with a big
-// roller door facing the road, plus a glowing "GARAGE" sign.
-function makeGarage(scene, world) {
-  var C = NBConfig.garage;
-  var g = new THREE.Group();
-  var body = new THREE.Mesh(
-    new THREE.BoxGeometry(C.w, 7, C.d),
-    new THREE.MeshLambertMaterial({ color: 0x4a3f5e, emissive: 0x1a1426 })
-  );
-  body.position.y = 3.5; body.castShadow = true;
-  g.add(body);
-  var door = new THREE.Mesh(
-    new THREE.BoxGeometry(12, 5, 0.4),
-    new THREE.MeshLambertMaterial({ color: 0x6b5a8a, emissive: 0x2a2040 })
-  );
-  door.position.set(0, 2.5, -C.d / 2 - 0.2);
-  g.add(door);
-  var sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(14, 2),
-    new THREE.MeshBasicMaterial({ color: 0xffd27a })
-  );
-  sign.position.set(0, 6.2, -C.d / 2 - 0.5);
-  sign.rotation.y = Math.PI;
-  g.add(sign);
-  g.position.set(C.x, 0, C.z);
-  scene.add(g);
-  world.garageDoor = { x: C.x, z: C.z - C.d / 2 };
-  addRectCollider(world, C.x, C.z, C.w / 2, C.d / 2); // whole building solid
-}
-
-// makeBank builds the bank: a stone-clad block with columns and a gold
-// "BANK" sign. The entrance faces south (toward the pickup at z -54).
-function makeBank(scene, world) {
-  var C = NBConfig.bank;
-  var g = new THREE.Group();
-  var body = new THREE.Mesh(
-    new THREE.BoxGeometry(C.w, 12, C.d),
-    new THREE.MeshLambertMaterial({ color: 0x8a7a5e, emissive: 0x2a2016 })
-  );
-  body.position.y = 6; body.castShadow = true;
-  g.add(body);
-  for (var i = -1; i <= 1; i++) {
-    var col = new THREE.Mesh(
-      new THREE.CylinderGeometry(1, 1.2, 10, 8),
-      new THREE.MeshLambertMaterial({ color: 0xb8a888 })
-    );
-    col.position.set(i * 8, 5, -C.d / 2 - 1.5);
-    g.add(col);
-  }
-  var sign = new THREE.Mesh(
-    new THREE.PlaneGeometry(10, 2),
-    new THREE.MeshBasicMaterial({ color: 0xffd700 })
-  );
-  sign.position.set(0, 11, -C.d / 2 - 0.5);
-  sign.rotation.y = Math.PI;
-  g.add(sign);
-  g.position.set(C.x, 0, C.z);
-  scene.add(g);
-  world.bankDoor = { x: C.x, z: C.z + C.d / 2 };
-  addRectCollider(world, C.x, C.z, C.w / 2, C.d / 2);
-}
-
-// makeHospital builds the hospital: a white block with a red cross sign.
-// The respawn point is the door on its north side.
-function makeHospital(scene, world) {
-  var x = NBConfig.hospital.x, z = NBConfig.hospital.z;
-  var g = new THREE.Group();
-  var body = new THREE.Mesh(
-    new THREE.BoxGeometry(24, 14, 18),
-    new THREE.MeshLambertMaterial({ color: 0xd8d4cc, emissive: 0x3a3640 })
-  );
-  body.position.y = 7; body.castShadow = true;
-  g.add(body);
-  var cross = new THREE.Mesh(
-    new THREE.PlaneGeometry(5, 5),
-    new THREE.MeshBasicMaterial({ color: 0xff3b30 })
-  );
-  cross.position.set(0, 12, -9.2);
-  cross.rotation.y = Math.PI;
-  g.add(cross);
-  g.position.set(x, 0, z);
-  scene.add(g);
-  addRectCollider(world, x, z, 12, 9);
-}
-
-// makePier builds the wooden south pier: planks from the sea wall out to
-// z 209, posts along the sides, and a small shack at the tip.
-function makePier(scene, world) {
-  var g = new THREE.Group();
-  var deck = new THREE.Mesh(
-    new THREE.BoxGeometry(14, 0.6, 20),
-    new THREE.MeshLambertMaterial({ color: 0x6b4a2f })
-  );
-  deck.position.set(150, 0.4, 199);
-  g.add(deck);
-  for (var i = 0; i < 8; i++) {
-    [-6.5, 6.5].forEach(function (dx) {
-      var post = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.3, 0.3, 1.6, 6),
-        new THREE.MeshLambertMaterial({ color: 0x4a3220 })
-      );
-      post.position.set(150 + dx, 0.8, 191 + i * 2.4);
-      g.add(post);
-    });
-  }
-  var shack = new THREE.Mesh(
-    new THREE.BoxGeometry(6, 4, 5),
-    new THREE.MeshLambertMaterial({ color: 0x3f5a6b, emissive: 0x14202a })
-  );
-  shack.position.set(150, 2, 207);
-  g.add(shack);
-  scene.add(g);
-}
-
-// makeProps scatters street lamps, palms, benches and hydrants along the
-// roads. Each is a small circle collider.
-function makeProps(scene, world) {
-  var lampMat = new THREE.MeshLambertMaterial({ color: 0x2a2a33 });
-  var lampHeadMat = new THREE.MeshBasicMaterial({ color: 0xffe9a8 });
-  var trunkMat = new THREE.MeshLambertMaterial({ color: 0x5a3d24 });
-  var leafMat = new THREE.MeshLambertMaterial({ color: 0x2e6b34, emissive: 0x0a2410 });
-  for (var i = 0; i < 24; i++) {
-    var road = NBConfig.roadAt[i % 6];
-    var along = -180 + Math.floor(i / 6) * 90 + (i % 4) * 20;
-    var px = (i % 2 === 0) ? road + 9 : along;
-    var pz = (i % 2 === 0) ? along : road + 9;
-    var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.15, 6, 6), lampMat);
-    pole.position.set(px, 3, pz);
-    scene.add(pole);
-    var head = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), lampHeadMat);
-    head.position.set(px, 6.1, pz);
-    scene.add(head);
-    addCircleCollider(world, px, pz, 0.3);
-  }
-  for (var j = 0; j < 14; j++) {
-    var tx = -170 + j * 26, tz = (j % 2 === 0) ? 196 : -196;
-    var trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.4, 7, 6), trunkMat);
-    trunk.position.set(tx, 3.5, tz);
-    scene.add(trunk);
-    var crown = new THREE.Mesh(new THREE.ConeGeometry(2.6, 3, 7), leafMat);
-    crown.position.set(tx, 8, tz);
-    scene.add(crown);
-    addCircleCollider(world, tx, tz, 0.5);
-  }
-  for (var k = 0; k < 8; k++) {
-    var bx = -140 + k * 40, bz = (k % 2 === 0) ? 44 : -44;
-    var bench = new THREE.Mesh(
-      new THREE.BoxGeometry(2.4, 0.5, 0.8),
-      new THREE.MeshLambertMaterial({ color: 0x7a5a34 })
-    );
-    bench.position.set(bx, 0.5, bz);
-    scene.add(bench);
-    addCircleCollider(world, bx, bz, 1.2);
-  }
-  for (var h = 0; h < 6; h++) {
-    var hx = -105 + h * 42, hz = (h % 2 === 0) ? 112 : -112;
-    var hyd = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.4, 1, 8),
-      new THREE.MeshLambertMaterial({ color: 0xd23c2e, emissive: 0x3a0a06 })
-    );
-    hyd.position.set(hx, 0.5, hz);
-    scene.add(hyd);
-    addCircleCollider(world, hx, hz, 0.5);
-  }
-}
-
-// makeBeacon creates the gold objective beam: a tall translucent cylinder
-// plus a glowing base disc. Missions move it; the HUD points at it.
-function makeBeacon(scene, world) {
-  var beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.6, 2.2, 70, 12, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0xffd700, transparent: true, opacity: 0.22,
-      side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending
-    })
-  );
-  beam.position.y = 35;
-  scene.add(beam);
-  var base = new THREE.Mesh(
-    new THREE.CircleGeometry(3, 20),
-    new THREE.MeshBasicMaterial({ color: 0xffd700, transparent: true, opacity: 0.55 })
-  );
-  base.rotation.x = -Math.PI / 2;
-  base.position.y = 0.1;
-  scene.add(base);
-  world.beacon = beam;
-  world.beaconBase = base;
-}
-
-// addRectCollider registers an axis-aligned box collider.
-function addRectCollider(world, x, z, hw, hd) {
-  world.colliders.push({ x: x, z: z, hw: hw, hd: hd });
-}
-
-// addCircleCollider registers a circle collider.
-function addCircleCollider(world, x, z, r) {
-  world.colliders.push({ x: x, z: z, r: r });
-}
-
-// collides reports whether a circle at (x, z) with radius r overlaps any
-// collider (rect or circle). Used by the player, cars, cops and thugs.
-function collides(world, x, z, r) {
-  for (var i = 0; i < world.colliders.length; i++) {
-    var c = world.colliders[i];
-    if (c.r !== undefined) {
-      var dx = x - c.x, dz = z - c.z, rr = r + c.r;
-      if (dx * dx + dz * dz < rr * rr) return true;
-    } else {
-      var cx = Math.max(c.x - c.hw, Math.min(x, c.x + c.hw));
-      var cz = Math.max(c.z - c.hd, Math.min(z, c.z + c.hd));
-      var ddx = x - cx, ddz = z - cz;
-      if (ddx * ddx + ddz * ddz < r * r) return true;
+  for (const bx of blockCentres) {
+    for (const bz of blockCentres) {
+      // Landmark blocks get their own buildings below.
+      if (bx === -100 && bz === -100) continue; // garage
+      if (bx === 100 && bz === -100) continue; // bank
+      if (bx === -100 && bz === 100) continue; // hospital
+      const r = hash2(bx, bz);
+      const h = 8 + Math.floor(r * 30);
+      const matIdx = Math.floor(hash2(bz, bx) * 3) % 3;
+      if (r > 0.62) {
+        // Two slimmer towers on this block.
+        addBuilding(bx - 8, bz, 15, 30, h, matIdx);
+        addBuilding(bx + 9, bz, 13, 30, Math.max(8, h - 9), (matIdx + 1) % 3);
+      } else {
+        addBuilding(bx, bz, 30, 30, h, matIdx);
+      }
     }
   }
-  return false;
-}
 
-// clampToCity keeps a position inside the playable area: the 400x400 m
-// city, the sea wall at z 206, and the pier corridor to z 209.
-function clampToCity(x, z) {
-  var cx = Math.max(-198, Math.min(198, x));
-  var cz = Math.max(-198, Math.min(198, z));
-  if (cz > 206) {
-    if (cx >= NBConfig.pierMinX && cx <= NBConfig.pierMaxX) cz = Math.min(cz, NBConfig.pierTipZ);
-    else cz = 206;
+  // Antenna on the tallest tower.
+  if (tallest) {
+    const ant = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.12, 0.2, 12, 6),
+      new THREE.MeshBasicMaterial({ color: 0xff5a5a }),
+    );
+    ant.position.set(tallest.x, tallest.h + 6, tallest.z);
+    scene.add(ant);
   }
-  return { x: cx, z: cz };
+
+  // --- Landmarks ------------------------------------------------------
+  // Garage (HQ): a low wide workshop with a yard and a warm sign.
+  const garageMesh = new THREE.Mesh(
+    boxGeo,
+    new THREE.MeshLambertMaterial({ color: 0x3d5a45 }),
+  );
+  garageMesh.scale.set(26, 7, 18);
+  garageMesh.position.set(WORLD.garage.x, 3.5, WORLD.garage.z - 6);
+  garageMesh.castShadow = true;
+  garageMesh.receiveShadow = true;
+  scene.add(garageMesh);
+  colliders.push({
+    minX: WORLD.garage.x - 13,
+    maxX: WORLD.garage.x + 13,
+    minZ: WORLD.garage.z - 15,
+    maxZ: WORLD.garage.z + 3,
+  });
+  const garageSign = new THREE.Mesh(
+    stripGeo,
+    new THREE.MeshBasicMaterial({ color: 0x34d399 }),
+  );
+  garageSign.scale.set(20, 1, 1);
+  garageSign.position.set(WORLD.garage.x, 7.6, WORLD.garage.z + 3.2);
+  scene.add(garageSign);
+  landmarks.garage = { x: WORLD.garage.x, z: WORLD.garage.z };
+
+  // Bank: a tall pale tower with columns and front steps, door south.
+  const bankMesh = new THREE.Mesh(
+    boxGeo,
+    new THREE.MeshLambertMaterial({ color: 0x8a7f63, emissive: 0x201a10 }),
+  );
+  bankMesh.scale.set(28, 34, 24);
+  bankMesh.position.set(WORLD.bank.x, 17, WORLD.bank.z - 4);
+  bankMesh.castShadow = true;
+  bankMesh.receiveShadow = true;
+  scene.add(bankMesh);
+  colliders.push({
+    minX: WORLD.bank.x - 14,
+    maxX: WORLD.bank.x + 14,
+    minZ: WORLD.bank.z - 16,
+    maxZ: WORLD.bank.z + 8,
+  });
+  const colGeo = new THREE.CylinderGeometry(0.9, 0.9, 10, 8);
+  const colMat = new THREE.MeshLambertMaterial({ color: 0xd8cfb8 });
+  for (const dx of [-9, -3, 3, 9]) {
+    const col = new THREE.Mesh(colGeo, colMat);
+    col.position.set(WORLD.bank.x + dx, 5, WORLD.bank.z + 8);
+    col.castShadow = true;
+    scene.add(col);
+  }
+  const bankSign = new THREE.Mesh(
+    stripGeo,
+    new THREE.MeshBasicMaterial({ color: 0xfbbf24 }),
+  );
+  bankSign.scale.set(22, 1, 1);
+  bankSign.position.set(WORLD.bank.x, 30, WORLD.bank.z + 8.4);
+  scene.add(bankSign);
+  landmarks.bank = { x: WORLD.bank.x, z: WORLD.bank.z };
+
+  // Hospital: a white block with a glowing cross, respawn point.
+  const hospMesh = new THREE.Mesh(
+    boxGeo,
+    new THREE.MeshLambertMaterial({ color: 0xdfe6ea, emissive: 0x2a2f33 }),
+  );
+  hospMesh.scale.set(26, 16, 22);
+  hospMesh.position.set(WORLD.hospital.x, 8, WORLD.hospital.z);
+  hospMesh.castShadow = true;
+  hospMesh.receiveShadow = true;
+  scene.add(hospMesh);
+  colliders.push({
+    minX: WORLD.hospital.x - 13,
+    maxX: WORLD.hospital.x + 13,
+    minZ: WORLD.hospital.z - 11,
+    maxZ: WORLD.hospital.z + 11,
+  });
+  const crossMat = new THREE.MeshBasicMaterial({ color: 0xff4d4d });
+  const crossV = new THREE.Mesh(new THREE.BoxGeometry(1.2, 5, 0.5), crossMat);
+  crossV.position.set(WORLD.hospital.x, 18.5, WORLD.hospital.z + 11.2);
+  scene.add(crossV);
+  const crossH = new THREE.Mesh(new THREE.BoxGeometry(4, 1.2, 0.5), crossMat);
+  crossH.position.set(WORLD.hospital.x, 18.5, WORLD.hospital.z + 11.2);
+  scene.add(crossH);
+  landmarks.hospital = { x: WORLD.hospital.x, z: WORLD.hospital.z };
+
+  // --- Street lamps ---------------------------------------------------
+  const poleGeo = new THREE.CylinderGeometry(0.12, 0.16, 6, 6);
+  const poleMat = new THREE.MeshLambertMaterial({ color: 0x2c2c34 });
+  const headGeo = new THREE.BoxGeometry(1.4, 0.3, 0.5);
+  const headMat = new THREE.MeshBasicMaterial({ color: 0xffe1a1 });
+  for (const s of WORLD.streets) {
+    for (const t of [-100, -50, 0, 50, 100]) {
+      if ((s + t) % 100 !== 0) continue;
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.set(s + 8, 3, t);
+      scene.add(pole);
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.set(s + 8, 6.1, t);
+      scene.add(head);
+    }
+  }
+
+  // --- Objective beacon ----------------------------------------------
+  // A tall saturated-gold column. It draws on top of buildings
+  // (depthTest off) so it is never hidden, and fades out as the
+  // camera closes in, so it never covers the scene on arrival.
+  const beacon = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.6, 2.4, 130, 12, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: LIGHT.beaconColor,
+      transparent: true,
+      opacity: LIGHT.beaconOpacity,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  beacon.renderOrder = 999;
+  beacon.visible = false;
+  scene.add(beacon);
+
+  function setBeacon(x, z, visible) {
+    beacon.position.set(x, 65, z);
+    beacon.visible = visible;
+  }
+
+  function updateBeacon(camPos) {
+    if (!beacon.visible) return;
+    const dx = camPos.x - beacon.position.x;
+    const dz = camPos.z - beacon.position.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    // Fully visible far away, gone only when the camera is right on it,
+    // so the column still reads in a close-up shot.
+    const f = Math.min(1, Math.max(0, (dist - 8) / 25));
+    beacon.material.opacity = LIGHT.beaconOpacity * f;
+  }
+
+  function followSun(px, pz) {
+    sun.position.set(px + 120, 180, pz + 60);
+    sun.target.position.set(px, 0, pz);
+  }
+
+  // --- Collision ------------------------------------------------------
+  function collides(x, z, r) {
+    for (const b of colliders) {
+      const cx = Math.max(b.minX, Math.min(x, b.maxX));
+      const cz = Math.max(b.minZ, Math.min(z, b.maxZ));
+      const dx = x - cx;
+      const dz = z - cz;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  }
+
+  // Keep a position inside the playable area. Returns "shore" when the
+  // invisible sea wall stopped it, "edge" at the city bounds, "" otherwise.
+  function clampPlayable(p, r) {
+    let hit = "";
+    const lim = WORLD.edge + 3;
+    if (p.x < -lim) { p.x = -lim; hit = "edge"; }
+    if (p.x > lim) { p.x = lim; hit = "edge"; }
+    if (p.z < -lim) { p.z = -lim; hit = "edge"; }
+    // South: the sea. The pier corridor stays open to the pier end.
+    const inPier = Math.abs(p.x) <= WORLD.pierHalf;
+    const maxZ = inPier ? WORLD.pierEnd - 2 : WORLD.edge + 3;
+    if (p.z > maxZ) {
+      p.z = maxZ;
+      hit = "shore";
+    }
+    return hit;
+  }
+
+  return {
+    colliders,
+    landmarks,
+    setBeacon,
+    updateBeacon,
+    followSun,
+    collides,
+    clampPlayable,
+  };
 }
-
-// randomRoadPoint returns a random point on a random road (for spawns).
-function randomRoadPoint() {
-  var road = NBConfig.roadAt[Math.floor(Math.random() * NBConfig.roadAt.length)];
-  var along = -180 + Math.random() * 360;
-  if (Math.random() < 0.5) return { x: along, z: road };
-  return { x: road, z: along };
-}
-
-// moveBeacon places the gold beam (and its base disc) at (x, z).
-function moveBeacon(world, x, z) {
-  world.beacon.position.x = x;
-  world.beacon.position.z = z;
-  world.beaconBase.position.x = x;
-  world.beaconBase.position.z = z;
-}
-
-// moveSunWithPlayer keeps the 1024 shadow map centred on the player so
-// shadows stay crisp wherever the player goes.
-function moveSunWithPlayer(player) {
-  if (!worldSun) return;
-  worldSun.position.set(player.x + 60, 40, player.z - 80);
-  worldSun.target.position.set(player.x, 0, player.z);
-  worldSun.target.updateMatrixWorld();
-}
-
-var worldSun = null;
-
-window.NBWorld = {
-  buildCity: buildCity,
-  collides: collides,
-  clampToCity: clampToCity,
-  randomRoadPoint: randomRoadPoint,
-  moveBeacon: moveBeacon,
-  moveSunWithPlayer: moveSunWithPlayer,
-  addRectCollider: addRectCollider,
-  addCircleCollider: addCircleCollider
-};

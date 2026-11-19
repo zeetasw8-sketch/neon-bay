@@ -1,161 +1,211 @@
-// Neon Bay — tuning and mission data.
-// This file is pure data plus two tiny lookups. Nothing here runs the game:
-// it is read by the world, vehicle, police, mission and HUD modules.
+// Neon Bay — shared tuning and mission data.
+// One place for every number the rest of the game reads: the city grid,
+// the landmarks, the mission chain, the police and the combat balance.
+// Nothing here imports anything else; every other module reads this.
 
-// missionById returns the definition for one of the six jobs (0-based).
-function missionById(id) {
-  return NBConfig.missions[id];
-}
-
-// missionReward returns the dollar reward of one job (0-based).
-function missionReward(id) {
-  return NBConfig.missions[id].reward;
-}
-
-var NBConfig = {
-
-  // ---- city geometry (metres; x east, z south) ----
-  cityHalf: 200,
-  blocks: 5,          // 5x5 blocks
-  blockSize: 70,      // block pitch
-  roadWidth: 14,
-  roadAt: [-175, -105, -35, 35, 105, 175],
-  garage: { x: 0, z: 120, w: 34, d: 20 },
-  bank: { x: -70, z: -70, w: 26, d: 22 },
-  hospital: { x: 140, z: -92 },
-  pier: { x: 150, z: 196 },     // south pier pickup, ~168 m from spawn
-  seaWallZ: 206,                // water begins beyond this z
-  pierMinX: 143, pierMaxX: 157, // pier corridor may run to z 209
-  pierTipZ: 209,
-  spawn: { x: 0, z: 108 },
-  respawn: { x: 140, z: -92 },  // hospital door
-
-  // ---- player ----
-  walkSpeed: 6,            // m/s on foot
-  runSpeed: 9,             // m/s while Shift held
-  playerHealth: 100,
-  maxHealth: 100,
-  punchRange: 3,           // metres
-  punchDamage: 2,          // 2 punches down a thug (HP 4)
-  pistolDamage: 4,         // 1 shot down a thug (HP 4)
-  punchCooldown: 0.42,     // seconds
-  shootCooldown: 0.38,     // seconds
-  gunRange: 60,
-  bulletSpread: 0.012,
-
-  // ---- cars ----
-  carMaxSpeed: 38,         // m/s, ~85 mph
-  carAccel: 16,
-  carReverseMax: 10,
-  carSteer: 1.9,
-  carGrip: 0.86,
-  carRadius: 2.3,
-  carEnterRange: 4,
-  trafficCount: 10,
-  carCost: 800,
-
-  // ---- pedestrians / thugs ----
-  pedCount: 16,
-  pedSpeed: 1.4,
-  thugHealth: 4,
-  thugDamage: 5,           // per hit
-  thugCooldown: 1.4,       // seconds between hits
-  thugChaseRange: 35,      // metres; only then do they approach
-  thugSpread: 5.0,         // min distance thugs keep from each other (wide arc)
-
-  // ---- police ----
-  copWalkSpeed: 11,        // m/s on foot — faster than a walking player
-  copCarSpeed: 18,         // m/s in a cruiser
-  copGiveUpFoot: 80,       // metres: give up on foot beyond this
-  copGiveUpCar: 180,       // metres: give up in a car beyond this
-  copSpawnFoot: 70,        // metres away on foot
-  copSpawnCar: 140,        // metres away in a car
-  bustRange: 5,            // metres
-  bustStill: 3,            // player speed under this counts as still
-  bustHold: 2,             // seconds inside range while still = BUSTED
-  contactDamage: 8,        // hp per second a cop stays in contact
-  heatDecay: 22,           // clean seconds (no cop within 45 m) per -1 star
-  heatCheckRange: 45,
-  maxWanted: 3,
-  fine: 150,               // paid on WASTED and on BUSTED
-
-  // ---- money ----
-  startCash: 0,
-
-  // ---- missions (title, Mara's line, reward) ----
-  missions: [
-    {
-      id: 0, title: 'FIRST PICKUP', reward: 200,
-      intro: "Mara: Dex, pick up my package at the south pier. Follow the gold beacon.",
-      start: 'Pick up the package at the south pier',
-      complete: 'Package secured. Back to the garage.',
-      pickup: { x: 150, z: 196, r: 8 },
-      drop: { x: 0, z: 120, r: 22 },
-      target: null
-    },
-    {
-      id: 1, title: 'HOT DELIVERY', reward: 350, timer: 100,
-      intro: 'Mara: Hot cargo, Dex. 100 seconds to the drop. Drive like you mean it.',
-      start: 'Pick up the hot cargo at the garage',
-      complete: 'Deliver it to the drop-off — 100 seconds!',
-      pickup: { x: 0, z: 120, r: 12 },
-      drop: { x: 35, z: -160, r: 12 },
-      target: { x: 35, z: -160, label: 'DROP-OFF' }
-    },
-    {
-      id: 2, title: 'BORROWED WHEELS', reward: 400,
-      intro: 'Mara: I need wheels, Dex. Borrow any car on the street and bring it home.',
-      start: 'Steal any car and bring it to the garage',
-      complete: 'The car is ours. Back to the garage.',
-      pickup: null, drop: { x: 0, z: 120, r: 22 },
-      target: null
-    },
-    {
-      id: 3, title: 'LOSE THE HEAT', reward: 500, timer: 150, forceWanted: 2,
-      intro: 'Mara: Two stars, Dex. Get more than 45 metres from every cop and stay clean.',
-      start: 'Lose the cops — stay clean until the heat dies',
-      complete: 'Heat is gone. Back to the garage.',
-      pickup: null, drop: { x: 0, z: 120, r: 22 },
-      target: null
-    },
-    {
-      id: 4, title: 'DOCKSIDE TROUBLE', reward: 600,
-      intro: 'Mara: Three thugs are shaking down my pier crew. Sort them out, Dex.',
-      start: 'Deal with the three thugs at the docks',
-      complete: 'Docks are clear. Back to the garage.',
-      pickup: null, drop: { x: 0, z: 120, r: 22 },
-      target: { x: 150, z: 178, label: 'DOCKS' },
-      thugs: [
-        { x: 140, z: 180 }, { x: 155, z: 185 }, { x: 150, z: 170 }
-      ]
-    },
-    {
-      id: 5, title: 'THE BIG ONE', reward: 1500, timer: 240,
-      intro: 'Mara: The big one, Dex. Grab the case at the bank, then get home CLEAN.',
-      start: 'Grab the case at the bank',
-      complete: 'Case secured. Get home with NO wanted stars.',
-      pickup: { x: -70, z: -54, r: 8 },  // in front of the bank entrance
-      drop: { x: 0, z: 120, r: 22 },
-      target: { x: -70, z: -54, label: 'BANK' }
-    }
-  ],
-
-  // ---- screenshot labels (exact wording, one honest label per shot) ----
-  shotLabels: {
-    chase: '3★ WANTED — BANK HEIST — POLICE CHASE — JOB 6: THE BIG ONE',
-    mission: 'PISTOL FIGHT — 3 THUGS — JOB 5: DOCKSIDE TROUBLE',
-    drive: 'TIMED DELIVERY — 100s — JOB 2: HOT DELIVERY',
-    escape: '2★ WANTED — LOSE THE HEAT — JOB 4'
-  },
-
-  // ---- dusk look (static warm golden-hour sunset, no day/night cycle) ----
-  // v6 warm-up (parent decision): golden, sun-soaked, still dusk.
-  sky: 0x4a2438,
-  fog: 0x4a2438,
-  hemiSky: 0xd8b48a, hemiGround: 0x3a2620, hemiIntensity: 1.2,
-  sunColor: 0xffc46b, sunIntensity: 2.1,
-  sunPos: { x: 60, y: 40, z: -80 }
+export const WORLD = {
+  // Streets run north-south and east-west at these coordinates.
+  // Six streets make five blocks in each direction (5x5 city grid).
+  streets: [-125, -75, -25, 25, 75, 125],
+  streetHalf: 7,
+  // The built city ends here; south of it is sand, then sea.
+  edge: 132,
+  sandTo: 152,
+  seaAt: 152,
+  // The wooden pier sticks out over the sea on this corridor.
+  pierHalf: 8,
+  pierEnd: 172,
+  // Landmark centres.
+  garage: { x: -100, z: -100 },
+  bank: { x: 100, z: -100 },
+  hospital: { x: -100, z: 100 },
+  pier: { x: 0, z: 164 },
+  buyer: { x: 50, z: -125 },
+  // The bank pickup stands OUTSIDE the bank, in front of its south door,
+  // so a player on foot or in a car can always reach it.
+  bankPickup: { x: 100, z: -78 },
+  bankPickupRadius: 10,
+  // The garage yard counts as "home" from any side.
+  garageRadius: 20,
+  // Generic objective trigger radius.
+  objectiveRadius: 7,
 };
 
-window.NBConfig = NBConfig;
-window.NB_CONFIG = NBConfig;
+export const PLAYER = {
+  walkSpeed: 6,
+  sprintSpeed: 10,
+  radius: 0.9,
+  maxHealth: 100,
+};
+
+export const CAR = {
+  maxSpeed: 30, // ~67 mph
+  accel: 14,
+  brake: 26,
+  reverseMax: 9,
+  turnRate: 1.9,
+  drag: 0.55,
+  handbrakeDrag: 3.2,
+};
+
+export const TRAFFIC = {
+  cars: 10,
+  cruiseMin: 7,
+  cruiseMax: 12,
+};
+
+export const CROWD = {
+  pedestrians: 16,
+  walkMin: 1.1,
+  walkMax: 2.0,
+  fleeSpeed: 4.2,
+};
+
+export const POLICE = {
+  topSpeed: 28,
+  accel: 16,
+  arrestDist: 5,
+  arrestSeconds: 2,
+  slowSpeed: 3,
+  contactDamage: 15, // hp per second while touching the player
+  spawnMin: 45,
+  spawnMax: 70,
+};
+
+export const WANTED = {
+  max: 5,
+  decaySeconds: 20, // one star fades per 20 s without a fresh crime
+  fine: 150,
+};
+
+export const COMBAT = {
+  thugHp: 4, // v7 balance: tougher thugs
+  punchDamage: 2, // two punches per thug
+  pistolDamage: 4, // one shot kills one thug
+  punchRange: 2.6,
+  punchArc: 1.1, // radians of aim tolerance
+  shootRange: 60,
+  thugDamage: 8, // hp a thug hit deals
+  thugHitCooldown: 1.1, // seconds between thug hits
+  thugSpread: 5.0, // metres between thugs in the dock arc
+  thugSpeed: 3.2,
+};
+
+export const LIGHT = {
+  // Warm golden-hour dusk (v7 warm-up, parent approved).
+  skyTop: 0x3a2350,
+  skyBottom: 0xc97a3e,
+  fog: 0x8a5a44,
+  hemiSky: 0xffd9a0,
+  hemiGround: 0x4a2e1e,
+  hemiIntensity: 1.2,
+  sunColor: 0xffc46b,
+  sunIntensity: 2.1,
+  beaconColor: 0xffb300,
+  beaconOpacity: 0.85,
+};
+
+// The six jobs, in order. Mara Voss hands them out one after another.
+// reward is paid when the job finishes; timer is 0 when there is none.
+export const MISSIONS = [
+  {
+    id: 0,
+    key: "pickup",
+    title: "JOB 1 — FIRST PICKUP",
+    name: "FIRST PICKUP",
+    reward: 200,
+    timer: 0,
+    intro:
+      "Dex. Mara here. A package is waiting at the end of the pier. " +
+      "Pick it up and bring it home to the garage. No rush. No heat.",
+    target: { x: WORLD.pier.x, z: WORLD.pier.z },
+    targetName: "the pier",
+    objective: "Pick up the package at the pier",
+    deliver: "Bring the package home to the garage",
+  },
+  {
+    id: 1,
+    key: "delivery",
+    title: "JOB 2 — HOT DELIVERY",
+    name: "HOT DELIVERY",
+    reward: 350,
+    timer: 100,
+    intro:
+      "Good. Now take that package north to the buyer. One hundred " +
+      "seconds, Dex. The buyer does not wait, and neither do I.",
+    target: { x: WORLD.buyer.x, z: WORLD.buyer.z },
+    targetName: "the buyer, north",
+    objective: "Deliver the package to the buyer up north",
+    deliver: "",
+  },
+  {
+    id: 2,
+    key: "steal",
+    title: "JOB 3 — BORROWED WHEELS",
+    name: "BORROWED WHEELS",
+    reward: 400,
+    timer: 0,
+    intro:
+      "I need a car, and I need it clean. Take any car you like and " +
+      "bring it to the garage. Try not to make a scene.",
+    target: { x: WORLD.garage.x, z: WORLD.garage.z },
+    targetName: "the garage",
+    objective: "Steal any car and bring it to the garage",
+    deliver: "",
+  },
+  {
+    id: 3,
+    key: "escape",
+    title: "JOB 4 — LOSE THE HEAT",
+    name: "LOSE THE HEAT",
+    reward: 500,
+    timer: 0,
+    startWanted: 2,
+    intro:
+      "The cops are on you, Dex. Two stars. Lose them. Stay out of " +
+      "sight, keep moving, and do nothing stupid for a while.",
+    target: { x: WORLD.garage.x, z: WORLD.garage.z },
+    targetName: "the garage",
+    objective: "Lose the heat — get your wanted level to zero",
+    deliver: "",
+  },
+  {
+    id: 4,
+    key: "fight",
+    title: "JOB 5 — DOCKSIDE TROUBLE",
+    name: "DOCKSIDE TROUBLE",
+    reward: 600,
+    timer: 0,
+    intro:
+      "Three thugs are holding the docks. I left a pistol for you at " +
+      "the pier. Take them down, all three, and the docks are ours.",
+    target: { x: WORLD.pier.x, z: 145 },
+    targetName: "the docks",
+    objective: "Take down all three thugs at the docks",
+    deliver: "",
+  },
+  {
+    id: 5,
+    key: "bank",
+    title: "JOB 6 — THE BIG ONE",
+    name: "THE BIG ONE",
+    reward: 1500,
+    timer: 240,
+    intro:
+      "This is it, Dex. The bank. Grab the case from the front steps, " +
+      "then lose three stars of heat and get home. Four minutes. Go.",
+    target: { x: WORLD.bankPickup.x, z: WORLD.bankPickup.z },
+    targetName: "the bank",
+    objective: "Grab the case at the bank, then lose the heat and get home",
+    deliver: "Lose the heat, then reach the garage",
+  },
+];
+
+export const SAVE_KEY = "neonbay-save-v1";
+
+export const SHOT_LABELS = {
+  chase: "3★ WANTED — BANK HEIST — POLICE CHASE — JOB 6: THE BIG ONE",
+  mission: "PISTOL FIGHT — 3 THUGS — JOB 5: DOCKSIDE TROUBLE",
+  drive: "TIMED DELIVERY — 100s — JOB 2: HOT DELIVERY",
+  escape: "2★ WANTED — LOSE THE HEAT — JOB 4",
+};
